@@ -1,0 +1,6 @@
+{
+  "name": "making-of-explainer",
+  "private": true,
+  "description": "Frame capture for the canvas renderer (uses the system Google Chrome).",
+  "dependencies": { "playwright-core": "1.48.2" }
+}

@@ -1,0 +1,105 @@
+<!doctype html><html><head><meta charset="utf-8"><title>BRICKS</title>
+<style>html,body{margin:0;background:#000;overflow:hidden;height:100%}canvas{display:block;margin:0 auto}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+</head><body><script type="module">
+import * as THREE from 'three';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+const q = new URLSearchParams(location.search); const L = await (await fetch('/work/wall_layout.json')).json(); const capture = q.get('capture') === '1'; const JOB = q.get('job') || 'bricks';
+const W = 3840, H = 2160, FPS = 60, DUR = 5.2, N = Math.round(DUR * FPS); const BEAT = 0.5;
+function rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; } }
+const R = rng(9); const ease = x => { x = Math.min(1, Math.max(0, x)); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const renderer = new THREE.WebGLRenderer({antialias: true, preserveDrawingBuffer: true}); renderer.setPixelRatio(1); renderer.setSize(W, H, false); renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement); if (!capture) { renderer.domElement.style.height = '100vh'; renderer.domElement.style.width = (100 * W / H) + 'vh'; }
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x000000); scene.fog = new THREE.FogExp2(0x000000, 0.055);
+const FOV = 50; const cam = new THREE.PerspectiveCamera(FOV, W / H, 0.05, 200); const D0 = 4.5 / Math.tan(FOV / 2 * Math.PI / 180);   // distance where the 16x9 wall exactly fills the frame
+const loader = new THREE.TextureLoader(); const tex = u => new Promise(r => loader.load(u, t => { t.colorSpace = THREE.SRGBColorSpace; r(t); }, undefined, () => r(null)));
+const files = {}; for (const [k, v] of Object.entries(L.files)) files[k] = await tex('/' + v);
+const CW = 1.0, CH = 0.5625; const cards = []; const RADIUS = 3.2, SPACING = 1.25;
+for (let r = 0; r < 16; r++) for (let c = 0; c < 16; c++) {
+  const idx = L.grid[r * 16 + c]; const t = files[idx]; if (!t) continue;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(CW, CH), new THREE.MeshBasicMaterial({map: t, side: THREE.DoubleSide, transparent: true}));
+  const wall = new THREE.Vector3((c - 7.5) * CW, (7.5 - r) * CH, 0);
+  const ring = r, ang = (c / 16) * Math.PI * 2 + ring * 0.21;   // spiral twist along the tunnel            // row -> ring depth, column -> angle around the tunnel
+  const tun = new THREE.Vector3(Math.cos(ang) * RADIUS, Math.sin(ang) * RADIUS, -1.5 - ring * SPACING);
+  const qWall = new THREE.Quaternion(); const qTun = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, ang + Math.PI / 2)).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)));
+  m.position.copy(wall); m.userData = {wall, tun, qWall, qTun, shatter: null, seed: R(), pos: wall.clone(), vel: new THREE.Vector3((R() - 0.5) * 1.2, R() * 0.8, 0.8 + R() * 2.2), rot: new THREE.Euler(0, 0, 0), avel: new THREE.Vector3((R() - 0.5) * 9, (R() - 0.5) * 9, (R() - 0.5) * 9), rest: null, delay: (7.5 - r) * 0.035 + R() * 0.12}; scene.add(m); cards.push(m);
+  const m2 = new THREE.Mesh(new THREE.PlaneGeometry(CW, CH), new THREE.MeshBasicMaterial({map: t, side: THREE.DoubleSide, transparent: true}));
+  const tun2 = tun.clone(); tun2.z -= 16 * SPACING; m2.position.copy(tun2); m2.quaternion.copy(qTun); m2.visible = false; m2.userData = {wall: tun2, tun: tun2, qWall: qTun, qTun, shatter: null, seed: R(), deep: true}; scene.add(m2); cards.push(m2);
+}
+const frags = [];
+const SPARKS = 900; const spG = new THREE.BufferGeometry(); const spP = new Float32Array(SPARKS * 3); const spSeed = new Float32Array(SPARKS); for (let i = 0; i < SPARKS; i++) spSeed[i] = R();
+spG.setAttribute('position', new THREE.BufferAttribute(spP, 3)); const sparks = new THREE.Points(spG, new THREE.PointsMaterial({color: 0xfff1d0, size: 0.06, transparent: true, opacity: 0.0, blending: THREE.AdditiveBlending, depthWrite: false})); scene.add(sparks);
+function makeFrags(card, t0) {
+  const nx = 4, ny = 3; const g0 = card.geometry.parameters; const group = new THREE.Group(); group.position.copy(card.position); group.quaternion.copy(card.quaternion);
+  for (let a = 0; a < nx; a++) for (let b = 0; b < ny; b++) {
+    const g = new THREE.PlaneGeometry(g0.width / nx, g0.height / ny); const uv = g.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setXY(k, (a + uv.getX(k)) / nx, (b + uv.getY(k)) / ny);
+    const m = new THREE.Mesh(g, card.material.clone()); m.position.set((a + 0.5) / nx * g0.width - g0.width / 2, (b + 0.5) / ny * g0.height - g0.height / 2, 0);
+    m.userData = {p0: m.position.clone(), v: new THREE.Vector3((a - nx / 2 + 0.5) * 1.4 + (R() - 0.5), (b - ny / 2 + 0.5) * 1.4 + (R() - 0.5), 1.5 + R() * 2.5), w: new THREE.Vector3(R() - 0.5, R() - 0.5, R() - 0.5).multiplyScalar(9)}; group.add(m);
+  }
+  group.userData = {t0}; scene.add(group); frags.push(group); card.userData.shatter = t0; card.visible = false;
+}
+// post: bloom + barrel distortion + radial blur (speed)
+const DistortShader = {uniforms: {tDiffuse: {value: null}, k: {value: 0.0}, rb: {value: 0.0}, ca: {value: 0.0}, tw: {value: 0.0}}, vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float k, rb, ca, tw; varying vec2 vUv;
+  vec2 bar(vec2 uv, float kk){ vec2 c = uv - 0.5; float r2 = dot(c, c); return 0.5 + c * (1.0 + kk * r2 + 0.6 * kk * r2 * r2); }
+  vec2 twist(vec2 uv, float a){ vec2 c = (uv - 0.5) * vec2(1.7778, 1.0); float r = length(c); float ang = a * (1.0 - smoothstep(0.0, 0.9, r)); float cs = cos(ang), sn = sin(ang); c = vec2(c.x * cs - c.y * sn, c.x * sn + c.y * cs); return 0.5 + c / vec2(1.7778, 1.0); }
+  void main(){ vec2 uv = twist(bar(vUv, k), tw); vec3 col = vec3(0.0); float n = 8.0; vec2 dir = (uv - 0.5) * rb;
+    for (float i = 0.0; i < 8.0; i++) { float f = i / n; col.r += texture2D(tDiffuse, uv - dir * f * (1.0 + ca)).r; col.g += texture2D(tDiffuse, uv - dir * f).g; col.b += texture2D(tDiffuse, uv - dir * f * (1.0 - ca)).b; }
+    gl_FragColor = vec4(col / n, 1.0); }`};
+const composer = new EffectComposer(renderer); composer.setSize(W, H); composer.addPass(new RenderPass(scene, cam)); const dist = new ShaderPass(DistortShader); composer.addPass(dist); const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.35, 0.6, 0.7); composer.addPass(bloom); composer.addPass(new OutputPass());
+const T_BRK = 0.55, T_REST = 1.75, T_ASM = 2.25, T_FOLD = 3.3, T_FLY = 4.6, Z_IN = 0.6; const FLOOR = -4.55; let shattered = new Set(); let lastT = -1;
+function step(t) {
+  const dt = lastT < 0 ? 1 / FPS : Math.max(0, t - lastT); lastT = t;
+  const pulse = 1 + 0.06 * Math.pow(Math.max(0, 1 - ((t % BEAT) / 0.25)), 2);
+  let z = D0, roll = 0, speedK = 0, pitch = 0;
+  for (const c of cards) {
+    const u = c.userData; if (u.deep) { c.visible = t > T_ASM; }
+    if (t < T_BRK) {                                   // wall shivers harder and harder on the beats
+      const sh = Math.pow(t / T_BRK, 3) * 0.06; c.position.set(u.wall.x + (R() - 0.5) * sh, u.wall.y + (R() - 0.5) * sh, (R() - 0.5) * sh * 2); c.rotation.set((R() - 0.5) * sh * 2, (R() - 0.5) * sh * 2, 0); c.material.color.setScalar(1.0);
+      if (u.deep) c.visible = false;
+    } else if (t < T_ASM) {                            // bricks break loose (top rows first), fall, bounce on the floor and come to rest
+      if (u.deep) { c.visible = false; continue; }
+      if (t - T_BRK >= u.delay) {
+        if (!u.falling) { u.falling = true; u.pos.copy(u.wall); }
+        if (!u.rest) {
+          u.vel.y -= 14.0 * dt; u.pos.addScaledVector(u.vel, dt); u.rot.x += u.avel.x * dt; u.rot.y += u.avel.y * dt; u.rot.z += u.avel.z * dt;
+          if (u.pos.y < FLOOR) { u.pos.y = FLOOR; u.vel.y *= -0.35; u.vel.x *= 0.6; u.vel.z *= 0.6; u.avel.multiplyScalar(0.5); if (Math.abs(u.vel.y) < 0.6) { u.rest = {p: u.pos.clone(), r: new THREE.Euler(Math.PI / 2 + (R() - 0.5) * 0.3, 0, u.rot.z)}; } }
+        }
+        if (u.rest) { c.position.copy(u.rest.p); c.rotation.copy(u.rest.r); } else { c.position.copy(u.pos); c.rotation.copy(u.rot); }
+      }
+      c.material.color.setScalar(t > T_REST ? 0.55 : 1.0);                   // the pile dims during the pause
+    } else if (t < T_FOLD) {                           // assembly: the pile lifts like particles, swirls and locks into the tunnel rings
+      const k = (t - T_ASM) / (T_FOLD - T_ASM); const e = ease(Math.min(1, Math.max(0, k * 1.15 - u.seed * 0.15)));
+      const from = u.rest ? u.rest.p : (u.deep ? u.tun.clone().setZ(FLOOR) : u.wall); const tp = u.tun.clone(); tp.x *= pulse; tp.y *= pulse;
+      const ang = (1 - e) * 6.0 * (u.seed > 0.5 ? 1 : -1); const r = 2.2 * (1 - e); const swirl = new THREE.Vector3(Math.cos(ang + u.seed * 6.28) * r, Math.sin(ang + u.seed * 6.28) * r, 0);
+      c.position.lerpVectors(from, tp, e).add(swirl.multiplyScalar(Math.sin(e * Math.PI))); const qa = new THREE.Quaternion().setFromEuler(u.rest ? u.rest.r : (u.rot || new THREE.Euler())); c.quaternion.slerpQuaternions(qa, u.qTun, e);
+      c.visible = true; c.material.color.setScalar(0.6 + 1.2 * Math.sin(e * Math.PI));                  // flare while flying
+      z = D0 - (D0 - Z_IN) * ease(k);
+    } else {                                           // dive
+      c.visible = true; const tp = u.tun.clone(); tp.x *= pulse; tp.y *= pulse; c.position.copy(tp); c.quaternion.copy(u.qTun);
+      const f = (t - T_FOLD) / (T_FLY - T_FOLD); const a = Math.pow(Math.max(0, f), 1.6); z = Z_IN - a * (Z_IN + 1.5 + 26 * SPACING); roll = 1.6 * a * a; speedK = Math.min(1, a * 1.4);
+      const ahead = c.position.z - z; c.material.color.setScalar(ahead > -2.5 && ahead < -0.3 ? 1.6 : 1.0);
+    }
+  }
+  if (t >= T_BRK && t < T_ASM) pitch = -0.22 * ease((t - T_BRK) / 0.6) * (t < T_REST + 0.3 ? 1 : 1 - ease((t - T_REST - 0.3) / 0.3));   // the camera looks down at the falling pile, then back up
+  cam.position.set(0.35 * Math.sin(t * 3.1) * speedK + 0.02 * Math.sin(t * 7), 0.25 * Math.cos(t * 2.3) * speedK, z); cam.rotation.set(pitch + 0.05 * Math.sin(t * 5) * speedK, 0.05 * Math.cos(t * 4) * speedK, roll); cam.fov = FOV + 30 * speedK; cam.updateProjectionMatrix();
+  // sparks swirl along the axis during assembly and dive
+  const sa = t > T_ASM ? Math.min(1, (t - T_ASM) / 0.4) : 0; sparks.material.opacity = 0.9 * sa * (t > T_FLY ? Math.max(0, 1 - (t - T_FLY) / 0.2) : 1);
+  for (let i = 0; i < SPARKS; i++) { const sd = spSeed[i]; const a = sd * 6.28 + t * (2 + sd * 3); const rr = 0.8 + sd * 2.6; spP[3 * i] = Math.cos(a) * rr; spP[3 * i + 1] = Math.sin(a) * rr; spP[3 * i + 2] = z - 1 - ((sd * 40 + t * 12) % 40); }
+  spG.attributes.position.needsUpdate = true;
+  // break-through: cards right in front shatter during the dive; after T_FLY everything left blows out
+  for (const c of cards) { if (c.userData.shatter !== null || !c.visible) continue; const ahead = c.position.z - z; if ((t > T_FOLD && ahead > -1.2 && ahead < 0.2) || t > T_FLY) makeFrags(c, t); }
+  for (const g of frags) { const a = t - g.userData.t0; for (const m of g.children) { const u = m.userData; m.position.set(u.p0.x + u.v.x * a, u.p0.y + u.v.y * a - 2.0 * a * a, u.p0.z + u.v.z * a); m.rotation.set(u.w.x * a, u.w.y * a, u.w.z * a); m.material.opacity = Math.max(0, 1 - a / 1.1); } }
+  dist.uniforms.k.value = 0.3 * speedK; dist.uniforms.rb.value = 0.11 * speedK; dist.uniforms.ca.value = 0.45 * speedK; dist.uniforms.tw.value = 1.4 * speedK * speedK; bloom.strength = 0.3 + 0.5 * speedK + (t > T_ASM && t < T_FOLD ? 0.4 : 0);
+  const bt = t - T_FLY; const flash = bt > 0 && bt < 0.12 ? 1 + 6 * (1 - bt / 0.12) : 1; const out = t > DUR - 0.3 ? Math.max(0, (DUR - t) / 0.3) : 1; renderer.toneMappingExposure = out * flash * (t > T_REST && t < T_ASM ? 0.75 : 1);
+}
+async function run() {
+  if (capture) { for (let i = 0; i < N; i++) { step(i / FPS); composer.render(); const blob = await new Promise(r => renderer.domElement.toBlob(r, 'image/jpeg', 0.95)); await fetch(`/frame?job=${JOB}&i=${i}&ext=jpg`, {method: 'POST', body: blob}); if (i % 20 === 0) document.title = `${i}/${N}`; } await fetch(`/done?job=${JOB}`, {method: 'POST'}); document.title = 'DONE'; }
+  else { let i = 0; (function loop(){ requestAnimationFrame(loop); step((i++ / FPS) % DUR); composer.render(); })(); }
+}
+run();
+</script></body></html>

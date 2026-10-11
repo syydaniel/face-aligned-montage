@@ -1,0 +1,11 @@
+{
+  "name": "face-aligned-montage",
+  "owner": { "name": "syydaniel" },
+  "plugins": [
+    {
+      "name": "face-aligned-montage",
+      "source": "./",
+      "description": "Skills face-aligned-montage and making-of-explainer, agents montage-director and explainer-director."
+    }
+  ]
+}

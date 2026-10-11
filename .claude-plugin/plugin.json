@@ -1,0 +1,9 @@
+{
+  "name": "face-aligned-montage",
+  "version": "1.0.0",
+  "description": "Face-aligned beat-synced montage in DaVinci Resolve by script, plus a vertical making-of explainer pipeline. Skills and agents for Claude Code.",
+  "author": { "name": "syydaniel" },
+  "repository": "https://github.com/syydaniel/face-aligned-montage",
+  "license": "MIT",
+  "keywords": ["video", "montage", "face-alignment", "davinci-resolve", "mediapipe", "tts", "explainer"]
+}

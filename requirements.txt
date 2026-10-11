@@ -1,0 +1,13 @@
+# montage pipeline + explainer data prep (Python 3.11-3.12)
+numpy
+opencv-python>=4.9
+mediapipe>=0.10.14
+rembg[cpu]>=2.0.57        # BiRefNet / IS-Net mattes
+pillow
+librosa
+soundfile
+scipy
+pyloudnorm
+# explainer voice (separate env recommended, Apple Silicon)
+# mlx-audio
+# mlx-whisper
