@@ -8,7 +8,8 @@ MFINAL = os.environ.get('MONTAGE_FINAL', os.path.join(MOUT, 'opening_4k.mp4'))
 import json, numpy as np, soundfile as sf, pyloudnorm as pyln
 from scipy.signal import butter, sosfilt, resample_poly
 R = XROOT; SR = 48000
-TL = json.load(open(R + '/web/timeline.json')); L = {l['key']: l for l in TL['lines']}; SC = {s['id']: s for s in TL['scenes']}
+import os
+TL = json.load(open(R + os.environ.get('TL_FILE', '/web/timeline.json'))); L = {l['key']: l for l in TL['lines']}; SC = {s['id']: s for s in TL['scenes']}
 N = int((TL['total'] + 0.5) * SR); rng = np.random.default_rng(3)
 def rd(p):
     a, sr = sf.read(p, dtype='float32'); a = a if a.ndim == 2 else np.stack([a, a], 1)
@@ -111,5 +112,5 @@ pk = np.abs(mix).max(); lim = 10 ** (-2.2 / 20)
 if pk > lim:   # soft knee limiter
     a = np.abs(mix); gr = np.minimum(1, lim / np.maximum(a, 1e-9)); w = int(0.004 * SR); gr = np.minimum.accumulate(gr[::-1])[::-1] if False else gr
     gm = np.convolve(gr.min(1), np.ones(w) / w, 'same'); gm = np.minimum(gm, gr.min(1)); mix *= gm[:, None]
-sf.write(R + '/out/mix.wav', mix, SR, subtype='PCM_24')
+sf.write(R + os.environ.get('MIX_OUT', '/out/mix.wav'), mix, SR, subtype='PCM_24')
 print('LUFS in', round(lu, 1), 'peak', round(20 * np.log10(np.abs(mix).max()), 2), 'dur', round(len(mix) / SR, 2))

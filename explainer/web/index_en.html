@@ -1,0 +1,437 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>making-of</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block;height:100vh;margin:0 auto}</style></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+// Deterministic 1080x1920 renderer: window.renderFrame(i) draws frame i (30 fps) and returns a JPEG (base64).
+const W = 1080, H = 1920, FPS = 30;
+const cv = document.getElementById('c'), main = cv.getContext('2d');
+const Q = new URLSearchParams(location.search);
+const J = async p => (await fetch(p, {cache: 'no-store'})).json();
+const TL = await J('/web/timeline_en.json');
+const FA = await J('/data/faces.json'), MESH = await J('/data/mesh.json'), ED = await J('/data/edit.json');
+const EX = await J('/data/expo.json'), RA = await J('/data/raw_atlas.json'), DT = await J('/data/dates.json'), FL = await J('/data/fail.json');
+const LN = {}; TL.lines.forEach(l => LN[l.key] = l);
+const FONT = '"Helvetica Neue",Helvetica,"PingFang SC",sans-serif', MONO = '"SF Mono",Menlo,monospace', LAT = '"Helvetica Neue",Helvetica,Arial,sans-serif';
+const COL = {bg: '#0b0a09', text: '#f2ece3', dim: 'rgba(242,236,227,0.56)', faint: 'rgba(242,236,227,0.14)', hair: 'rgba(242,236,227,0.32)', acc: '#ff9a3c', acc2: '#ffc58a', red: '#ff5b4f', ok: '#bfe6c6'};
+// ---------- math ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x)), lerp = (a, b, x) => a + (b - a) * x;
+const seg = (u, a, b) => clamp((u - a) / (b - a)), eo = x => 1 - Math.pow(1 - x, 3), eio = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const eback = x => { const c1 = 1.4, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const ein = x => x * x * x;
+let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+// ---------- images ----------
+const cache = new Map(); let COLLECT = false; const NEED = new Set();
+function load(src) { if (cache.has(src)) return cache.get(src); const p = new Promise(res => { let n = 0; const go = () => { const im = new Image(); im.onload = () => { p.img = im; res(im); }; im.onerror = () => { if (++n < 6) setTimeout(go, 200 * n); else res(null); }; im.src = src + (n ? `?r=${n}` : ''); }; go(); }); cache.set(src, p); return p; }
+function img(src) { if (COLLECT) { NEED.add(src); return null; } const p = cache.get(src); if (p && p.img) return p.img; if (!p) load(src); return null; }
+const seqSrc = (dir, t) => `/data/${dir}/${String(Math.max(0, Math.min(1014, Math.round(t * 30)))).padStart(5, '0')}.jpg`;
+const seq = (dir, t) => img(seqSrc(dir, t));
+function gc() { if (cache.size < 420) return; for (const k of [...cache.keys()]) { if (cache.size < 300) break; if (k.includes('/sq/') || k.includes('/open/')) cache.delete(k); } }
+// ---------- drawing helpers ----------
+let g = main;
+function T(s, x, y, size, o = {}) { g.save(); g.globalAlpha *= (o.a ?? 1); g.font = `${o.w || 500} ${size}px ${o.f || FONT}`; g.fillStyle = o.c || COL.text; g.textAlign = o.al || 'left'; g.textBaseline = o.bl || 'alphabetic'; g.letterSpacing = (o.ls || 0) + 'px'; if (o.sh) { g.shadowColor = 'rgba(0,0,0,0.65)'; g.shadowBlur = o.sh; } g.fillText(s, x, y); g.restore(); }
+function TW(s, size, w = 500, f = FONT, ls = 0) { g.save(); g.font = `${w} ${size}px ${f}`; g.letterSpacing = ls + 'px'; const m = g.measureText(s).width; g.restore(); return m; }
+function D(im, x, y, w, h, a = 1) { if (!im || a <= 0) return; g.save(); g.globalAlpha *= a; g.drawImage(im, x, y, w, h); g.restore(); }
+function Dsrc(im, sx, sy, sw, sh, x, y, w, h, a = 1) { if (!im || a <= 0) return; g.save(); g.globalAlpha *= a; g.drawImage(im, sx, sy, sw, sh, x, y, w, h); g.restore(); }
+function cover(im, x, y, w, h, a = 1, cx = .5, cy = .5, z = 1) { if (!im) return; const s = Math.max(w / im.width, h / im.height) * z, sw = w / s, sh = h / s; Dsrc(im, clamp(im.width * cx - sw / 2, 0, im.width - sw), clamp(im.height * cy - sh / 2, 0, im.height - sh), sw, sh, x, y, w, h, a); }
+function line(x1, y1, x2, y2, c = COL.hair, lw = 2, a = 1, dash) { g.save(); g.globalAlpha *= a; g.strokeStyle = c; g.lineWidth = lw; if (dash) g.setLineDash(dash); g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.restore(); }
+function rect(x, y, w, h, c = COL.hair, lw = 2, a = 1, fill) { g.save(); g.globalAlpha *= a; if (fill) { g.fillStyle = fill; g.fillRect(x, y, w, h); } if (c) { g.strokeStyle = c; g.lineWidth = lw; g.strokeRect(x, y, w, h); } g.restore(); }
+function rrect(x, y, w, h, r, fill, stroke, lw = 2, a = 1) { g.save(); g.globalAlpha *= a; g.beginPath(); g.roundRect(x, y, w, h, r); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); } g.restore(); }
+function circ(x, y, r, fill, stroke, lw = 2, a = 1) { if (r <= 0) return; g.save(); g.globalAlpha *= a; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); } g.restore(); }
+function corners(x, y, w, h, a = 1, len = 28, c = COL.hair) { g.save(); g.globalAlpha *= a; g.strokeStyle = c; g.lineWidth = 2; g.beginPath(); for (const [px, py, sx, sy] of [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]]) { g.moveTo(px + sx * len, py); g.lineTo(px, py); g.lineTo(px, py + sy * len); } g.stroke(); g.restore(); }
+function cross(x, y, r, c = COL.acc, a = 1, k = 1) { circ(x, y, r * k, null, c, 2, a); line(x - r * 1.9 * k, y, x - r * 0.55 * k, y, c, 2, a); line(x + r * 0.55 * k, y, x + r * 1.9 * k, y, c, 2, a); line(x, y - r * 1.9 * k, x, y - r * 0.55 * k, c, 2, a); line(x, y + r * 0.55 * k, x, y + r * 1.9 * k, c, 2, a); }
+function clip(x, y, w, h) { g.beginPath(); g.rect(x, y, w, h); g.clip(); }
+function pill(s, x, y, size, o = {}) { const w = TW(s, size, o.w || 500) + size * 1.4, h = size * 1.9; const xx = o.al === 'center' ? x - w / 2 : o.al === 'right' ? x - w : x; rrect(xx, y - h / 2, w, h, h / 2, o.fill || 'rgba(242,236,227,0.08)', o.stroke || COL.hair, 2, o.a ?? 1); T(s, xx + w / 2, y + size * 0.36, size, {al: 'center', c: o.c || COL.text, a: o.a ?? 1, w: o.w || 500}); return w; }
+const fmt = (x, n = 1) => x.toFixed(n);
+// face geometry (960x540 space)
+const F_OK = FA.faces.filter(f => f.status === 'ok'), F_REJ = FA.faces.filter(f => f.status !== 'ok'), TPL = FA.template, K6 = ['eyeR', 'eyeL', 'nose', 'mouthR', 'mouthL', 'chin'];
+const mid = f => [(f.pts.eyeR[0] + f.pts.eyeL[0]) / 2, (f.pts.eyeR[1] + f.pts.eyeL[1]) / 2], edist = f => Math.hypot(f.pts.eyeL[0] - f.pts.eyeR[0], f.pts.eyeL[1] - f.pts.eyeR[1]);
+const TM = [(TPL.eyeR[0] + TPL.eyeL[0]) / 2, (TPL.eyeR[1] + TPL.eyeL[1]) / 2];
+// draw face f into rect (x,y,w) of a 960x540 space with alignment progress k
+function faceAligned(f, x, y, w, k, a = 1) {
+  const im = img('/' + f.img); if (!im) return; const s = w / 960, [A, B, tx, ty] = f.M, sc = Math.hypot(A, B), th = Math.atan2(B, A), P = mid(f);
+  const Tt = [A * P[0] - B * P[1] + tx, B * P[0] + A * P[1] + ty], px = lerp(P[0], Tt[0], k), py = lerp(P[1], Tt[1], k);
+  g.save(); g.globalAlpha *= a; clip(x, y, w, w * 540 / 960); g.translate(x, y); g.scale(s, s); g.translate(px, py); g.rotate(th * k); g.scale(lerp(1, sc, k), lerp(1, sc, k)); g.translate(-P[0], -P[1]); g.drawImage(im, 0, 0, 960, 540); g.restore();
+}
+function facePts(f, k) { const [A, B, tx, ty] = f.M, sc = Math.hypot(A, B), th = Math.atan2(B, A), P = mid(f), Tt = [A * P[0] - B * P[1] + tx, B * P[0] + A * P[1] + ty]; const ss = lerp(1, sc, k), c = Math.cos(th * k), sn = Math.sin(th * k), px = lerp(P[0], Tt[0], k), py = lerp(P[1], Tt[1], k); const o = {}; for (const key of K6) { const dx = (f.pts[key][0] - P[0]) * ss, dy = (f.pts[key][1] - P[1]) * ss; o[key] = [px + c * dx - sn * dy, py + sn * dx + c * dy]; } return o; }
+function faceCrop(f, x, y, w, a = 1) { const im = img('/' + f.img); if (!im) return; const m = mid(f), d = edist(f) * 3.3; Dsrc(im, m[0] - d / 2, m[1] - d * 0.36, d, d, x, y, w, w, a); }
+// ---------- scene helpers ----------
+const SC = {}; let sceneT0 = 0;
+const L = k => LN[k];
+const lu = (t, k, a = 0, b) => seg(t, L(k).t0 + a, b === undefined ? L(k).t1 : L(k).t0 + b);
+// ===== HOOK =====
+const T1 = ED.items.filter(e => e.tr === 1).map(e => e.t).sort((a, b) => a - b);
+SC.hook = (t, s) => {
+  const u = t - s.t0, X = 40, Y = 400, S = 1000, ot = 9.0 + u;
+  const im = seq('sq', ot); D(im, X, Y, S, S); corners(X - 14, Y - 14, S + 28, S + 28, 1, 34);
+  const ex = [(1685 - 840) / 2160 * S + X, (2155 - 840) / 2160 * S + X], ey = 1000 / 2160 * S + Y, k = 1;
+  for (const x of ex) cross(x, ey, 30, COL.acc, 0.95, k);
+  line(X, ey, X + S, ey, 'rgba(255,154,60,0.55)', 1.5, k, [6, 8]);
+  T(`EYE  x 1685 · y 1000`, ex[1] + 70, ey - 18, 22, {f: MONO, c: COL.acc, a: k});
+  const n = T1.filter(x => x <= ot).length; T(`CUT ${String(n).padStart(3, '0')}`, X + 26, Y + 52, 30, {f: MONO, w: 600, c: COL.text, sh: 8});
+  T(`${fmt(ot, 2)} s`, X + S - 26, Y + 52, 26, {f: MONO, al: 'right', c: COL.dim, sh: 8});
+  const h1 = 1, h2 = eo(seg(u, L('hook2').t0 - s.t0 - 0.1, L('hook2').t0 - s.t0 + 0.5));
+  T('200+ faces', 72, 250 - (1 - h1) * 20, 78, {w: 600, a: h1});
+  T('Eyes locked on this line', 72, 340 - (1 - h2) * 20, 50, {w: 400, c: COL.acc2, a: h2});
+  const hp = eo(seg(t, L('hook3').t0, L('hook3').t0 + 0.5)); if (hp > 0) pill('Full cut at the end ↓', X + S, Y + S + 60, 30, {al: 'right', a: hp, c: COL.acc2});
+};
+// ===== WHY =====
+const DATES = DT.items.filter(d => /^\d{4}-\d{2}/.test(d.d)).map(d => ({...d, m: +d.d.slice(0, 4) * 12 + (+d.d.slice(5, 7)) - 1}));
+const MMIN = Math.min(...DATES.map(d => d.m)), MMAX = Math.max(...DATES.map(d => d.m));
+(() => { const cnt = {}; seed = 11; DATES.sort((a, b) => a.m - b.m || (a.p - b.p)); for (const d of DATES) { cnt[d.m] = (cnt[d.m] || 0) + 1; d.stack = cnt[d.m] - 1; d.r = rnd(); } })();
+const MAXST = Math.max(...DATES.map(d => d.stack + 1));
+SC.why = (t, s) => {
+  const u = t - s.t0, k2 = seg(t, L('why2').t0 - 0.2, L('why2').t0 + 0.6), k3 = seg(t, L('why3').t0 - 0.2, L('why3').t0 + 0.6);
+  // dot timeline by month
+  const a1 = 1 - eo(k2); if (a1 > 0) {
+    const x0 = 110, x1 = 970, y0 = 1160, mx = m => lerp(x0, x1, (m - MMIN) / (MMAX - MMIN));
+    line(x0 - 20, y0 + 22, x1 + 20, y0 + 22, COL.hair, 2, a1);
+    let lastX = -999; for (let yy = Math.floor(MMIN / 12); yy <= Math.floor(MMAX / 12); yy++) { const m = Math.max(MMIN, yy * 12); if (mx(m) - lastX < 110) continue; lastX = mx(m); T(String(yy), mx(m), y0 + 70, 30, {f: MONO, al: 'center', c: COL.dim, a: a1}); line(mx(m), y0 + 14, mx(m), y0 + 30, COL.hair, 2, a1); }
+    const sp = Math.min(13, 520 / MAXST), rr = Math.min(5.2, sp * 0.45); for (const d of DATES) { const kd = eo(seg(u, 0.3 + d.r * 1.6, 0.9 + d.r * 1.6)); if (kd <= 0) continue; const y = y0 - d.stack * sp; circ(mx(d.m), lerp(y - 300, y, kd), rr, d.p ? 'rgba(242,236,227,0.85)' : COL.acc, null, 0, a1 * kd); }
+    T('Footage of me · by month shot', 72, 520, 34, {w: 400, c: COL.dim, a: a1 * eo(seg(u, 0.2, 0.8))});
+    T('Two years of a master’s', 72, 600, 64, {w: 600, a: a1 * eo(seg(u, 0.1, 0.7))});
+    circ(84, 680, 8, COL.acc, null, 0, a1); T('video', 102, 690, 28, {c: COL.dim, a: a1}); circ(204, 680, 8, 'rgba(242,236,227,0.85)', null, 0, a1); T('photo', 222, 690, 28, {c: COL.dim, a: a1});
+  }
+  // mosaic of raw material
+  const a2 = eo(k2) * (1 - 0.82 * eo(k3)); if (a2 > 0) {
+    const at = img('/data/raw_atlas.jpg'), cols = 16, tw = 1000 / cols, th = tw * 9 / 16, X = 40, Y = 640;
+    for (let i = 0; i < RA.n; i++) { const kd = eo(seg(t, L('why2').t0 - 0.2 + hash(i) * 1.8, L('why2').t0 + 0.25 + hash(i) * 1.8)); if (kd <= 0 || !at) continue; const c = i % cols, r = Math.floor(i / cols); Dsrc(at, c * 160, r * 90, 160, 90, X + c * tw + 1, Y + r * th + 1 + (1 - kd) * 30, tw - 2, th - 2, a2 * kd); }
+    const kn = eo(seg(t, L('why2').t0, L('why2').t1 - 0.4));
+    T(String(Math.round(RA.videos * kn)), 72, 560, 96, {f: LAT, w: 300, c: COL.acc, a: a2}); T('videos', 72 + TW(String(RA.videos), 96, 300, LAT) + 14, 560, 36, {a: a2});
+    T(String(Math.round(RA.photos * kn)), 560, 560, 96, {f: LAT, w: 300, c: COL.text, a: a2}); T('photos', 560 + TW(String(RA.photos), 96, 300, LAT) + 14, 560, 36, {a: a2});
+  }
+  // the idea: aligned faces flicker under fixed marks
+  const a3 = eo(k3); if (a3 > 0) {
+    const S = 760, X = (W - S) / 2, Y = 560, ot = 14.0 + (t - L('why3').t0) * 0.9, im = seq('sq', ot);
+    g.save(); g.globalAlpha *= a3; rrect(X - 12, Y - 12, S + 24, S + 24, 6, COL.bg, null); D(im, X, Y, S, S); corners(X - 12, Y - 12, S + 24, S + 24, 1);
+    const ex = [(1685 - 840) / 2160 * S + X, (2155 - 840) / 2160 * S + X], ey = 1000 / 2160 * S + Y, nx = (1920 - 840) / 2160 * S + X, ny = 1285 / 2160 * S + Y, my = 1481 / 2160 * S + Y;
+    cross(ex[0], ey, 22); cross(ex[1], ey, 22); circ(nx, ny, 9, null, COL.acc, 2); line((1705 - 840) / 2160 * S + X, my, (2133 - 840) / 2160 * S + X, my, COL.acc, 2, 0.9);
+    T('Features pinned in one place', W / 2, Y + S + 80, 40, {al: 'center', w: 500, c: COL.acc2}); g.restore();
+  }
+};
+// ===== GHOST =====
+const GH = (() => { const fs = [...F_OK].sort((a, b) => mid(a)[0] - mid(b)[0]); return [fs[0], fs[Math.floor(fs.length * .35)], fs[Math.floor(fs.length * .7)], fs[fs.length - 1]]; })();
+SC.ghost = (t, s) => {
+  const u = t - s.t0, k = eio(seg(t, L('prob2').t0 - 0.1, L('prob2').t0 + 1.1));
+  const cw = 490, ch = cw * 9 / 16, R = {x: 40, y: 640, w: 1000};
+  GH.forEach((f, i) => {
+    const gx = 40 + (i % 2) * 510, gy = 600 + Math.floor(i / 2) * 330, ap = eo(seg(u, 0.2 + i * 0.25, 0.8 + i * 0.25));
+    const x = lerp(gx, R.x, k), y = lerp(gy, R.y, k), w = lerp(cw, R.w, k);
+    const a = ap * lerp(1, 1 / (i + 1), k); faceAligned(f, x, y, w, 0, a);
+    if (k < 0.5) { const sc = w / 960, p = facePts(f, 0); for (const key of K6) circ(x + p[key][0] * sc, y + p[key][1] * sc, 4, COL.acc, null, 0, ap * (1 - k * 2)); T(`eye gap ${Math.round(edist(f) * 4)} px`, x + 14, y + ch - 16, 22, {f: MONO, c: COL.text, a: ap * (1 - k * 2), sh: 6}); }
+  });
+  if (k > 0.6) { const sc = R.w / 960; GH.forEach(f => { for (const key of K6) circ(R.x + f.pts[key][0] * sc, R.y + f.pts[key][1] * sc, 6, null, COL.acc, 2, eo(seg(k, .6, 1))); }); corners(R.x - 12, R.y - 12, R.w + 24, R.w * 9 / 16 + 24, eo(seg(k, .6, 1))); T('Four raw frames · stacked', 72, 560, 34, {c: COL.dim, a: eo(seg(k, .7, 1))}); }
+  else T('Size, position and angle all differ', 72, 540, 34, {c: COL.dim, a: eo(seg(u, 0.2, 0.8)) * (1 - k * 1.6)});
+};
+// ===== MESH =====
+const MP = MESH.pts, MB = (() => { const xs = MP.map(p => p[0]), ys = MP.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; })();
+const ME = MESH.edges.map(e => [e[0], e[1], Math.hypot((MP[e[0]][0] + MP[e[1]][0]) / 2 - MP[1][0], (MP[e[0]][1] + MP[e[1]][1]) / 2 - MP[1][1])]).sort((a, b) => a[2] - b[2]);
+const KEYP = [[468, 'R eye', -1], [473, 'L eye', 1], [1, 'nose', 1], [61, 'mouth', -1], [291, 'mouth', 1], [152, 'chin', -1]];
+SC.mesh = (t, s) => {
+  const u = t - s.t0, fh = MB[3] - MB[1], sc = 820 / fh, cx = (MB[0] + MB[2]) / 2, cy = (MB[1] + MB[3]) / 2, ox = W / 2 - cx * sc, oy = 900 - cy * sc;
+  const P = i => [ox + MP[i][0] * sc, oy + MP[i][1] * sc], im = img('/' + MESH.img), ai = eo(seg(u, 0, 0.6));
+  g.save(); clip(40, 400, 1000, 1000); D(im, ox, oy, 960 * sc, 540 * sc, ai * 0.9); g.fillStyle = 'rgba(11,10,9,0.5)'; g.fillRect(40, 400, 1000, 1000); g.restore(); corners(40, 400, 1000, 1000, ai);
+  const k = eo(seg(t, L('lm1').t0 + 1.0, L('lm1').t1 + 0.2)), k2 = eo(seg(t, L('lm2').t0 - 0.2, L('lm2').t0 + 0.8)), n = Math.floor(ME.length * k);
+  g.save(); g.globalAlpha *= lerp(1, 0.2, k2); g.strokeStyle = 'rgba(255,236,214,0.5)'; g.lineWidth = 1.1; g.beginPath(); for (let i = 0; i < n; i++) { const [a, b] = ME[i]; const pa = P(a), pb = P(b); g.moveTo(pa[0], pa[1]); g.lineTo(pb[0], pb[1]); } g.stroke(); g.restore();
+  const np = Math.round(478 * k); T(String(np), 72, 1370, 120, {f: LAT, w: 200, c: COL.acc, a: ai * (1 - k2 * 0.7)}); T('landmarks', 72 + TW(String(np), 120, 200, LAT) + 16, 1370, 36, {a: ai * (1 - k2 * 0.7)});
+  KEYP.forEach(([i, name, side], j) => { const kk = eback(seg(t, L('lm2').t0 + 0.3 + j * 0.28, L('lm2').t0 + 0.75 + j * 0.28)); if (kk <= 0) return; const [x, y] = P(i); circ(x, y, 10 * kk, COL.acc, null); circ(x, y, 22 * kk, null, COL.acc, 2, 0.8);
+    const lx = side < 0 ? 120 : 960, ly = y; line(x + side * 26, y, lx - side * 10, ly, COL.acc, 1.5, clamp(kk)); T(name, lx + (side < 0 ? -10 : 10), ly + 12, 34, {al: side < 0 ? 'right' : 'left', w: 600, a: clamp(kk)}); });
+  if (k2 > 0) T('Only 6 of them', 72, 560, 40, {w: 600, c: COL.acc2, a: k2});
+  else T('Landmark model · every face', 72, 560, 34, {c: COL.dim, a: ai});
+};
+// ===== ALIGN =====
+const AL = (() => { const fs = [...F_OK].sort((a, b) => Math.abs(mid(b)[0] - 480) - Math.abs(mid(a)[0] - 480)); return [fs[0], fs[2], fs[4], fs[6]]; })();
+SC.align = (t, s) => {
+  const u = t - s.t0, R = {x: 40, y: 640, w: 1000}, sc = R.w / 960, h = R.w * 540 / 960, t5 = L('lm5').t0, t3 = L('lm3').t0 + 0.4, slot = (t5 - t3) / AL.length;
+  rect(R.x, R.y, R.w, h, COL.faint, 2); corners(R.x - 12, R.y - 12, R.w + 24, h + 24);
+  const k5 = eio(seg(t, t5 - 0.1, t5 + 1.6));
+  if (k5 <= 0) {
+    // previously aligned faces accumulate faintly
+    AL.forEach((f, i) => { const st = t3 + i * slot, ki = eio(seg(t, st + slot * 0.3, st + slot * 0.8)), live = t >= st && t < st + slot;
+      if (t < st) return; if (!live) { faceAligned(f, R.x, R.y, R.w, 1, 1 / (i + 1)); return; }
+      faceAligned(f, R.x, R.y, R.w, ki, eo(seg(t, st, st + 0.3)) * (i ? 0.85 : 1));
+      const p = facePts(f, ki); for (const key of K6) circ(R.x + p[key][0] * sc, R.y + p[key][1] * sc, 6, COL.acc, null);
+      const [A, B] = f.M; T(`scale ×${fmt(lerp(1, Math.hypot(A, B), ki), 2)}   rotate ${fmt(Math.atan2(B, A) * 180 / Math.PI * ki, 1)}°`, R.x, R.y + h + 64, 30, {f: MONO, c: COL.acc2});
+      T(`face ${i + 1} / ${AL.length}`, R.x + R.w, R.y + h + 64, 28, {f: MONO, al: 'right', c: COL.dim}); });
+  } else {
+    const dx = R.x + R.w * lerp(1, 0.5, eio(seg(k5, 0.25, 1)));
+    g.save(); clip(R.x, R.y, dx - R.x, h); AL.forEach((f, i) => faceAligned(f, R.x, R.y, R.w, 0, 1 / (i + 1))); g.restore();
+    g.save(); clip(dx, R.y, R.x + R.w - dx, h); AL.forEach((f, i) => faceAligned(f, R.x, R.y, R.w, 1, 1 / (i + 1))); g.restore();
+    line(dx, R.y - 30, dx, R.y + h + 30, COL.acc, 3); circ(dx, R.y + h / 2, 22, COL.acc, null); T('⇆', dx, R.y + h / 2 + 10, 26, {al: 'center', c: COL.bg, w: 700});
+    T('before', R.x + 10, R.y + h + 60, 32, {c: COL.dim, a: eo(seg(k5, .5, 1))}); T('aligned', R.x + R.w - 10, R.y + h + 60, 32, {al: 'right', c: COL.acc2, a: eo(seg(k5, .5, 1))});
+  }
+  for (const key of K6) { const x = R.x + TPL[key][0] * sc, y = R.y + TPL[key][1] * sc; cross(x, y, 12, 'rgba(255,197,138,0.9)', 0.9); }
+  line(R.x, R.y + TPL.eyeR[1] * sc, R.x + R.w, R.y + TPL.eyeR[1] * sc, 'rgba(255,197,138,0.4)', 1.5, 1, [5, 8]); line(R.x + TM[0] * sc, R.y, R.x + TM[0] * sc, R.y + h, 'rgba(255,197,138,0.3)', 1.5, 1, [5, 8]);
+  T('Template face', 72, 520, 64, {w: 600, a: eo(seg(u, 0, .6))}); T('Six fixed target points', 72, 580, 32, {c: COL.dim, a: eo(seg(u, .2, .8))});
+};
+// ===== GATE =====
+const GQ = (() => { const ok = [...F_OK], rj = [...F_REJ], q = []; const pat = ['ok', 'rej', 'ok', 'rej', 'rej', 'ok', 'rej', 'ok', 'rej', 'ok', 'rej', 'ok']; let i = 0, j = 0; for (const p of pat) { if (p === 'rej' && j < rj.length) q.push(rj[j++]); else q.push(ok[(i++) % ok.length]); } return q; })();
+const RULE = {yaw: f => `turned ${Math.abs(f.yaw).toFixed(0)}°`, blink: f => `eyes ${f.blink.toFixed(2)}`, jaw: f => `mouth ${f.jaw.toFixed(2)}`};
+SC.gate = (t, s) => {
+  const u = t - s.t0, t3 = L('gate3').t0, kf = eio(seg(t, t3 - 0.2, t3 + 0.7));
+  const rules = [['Head turn', '≤ 8°'], ['Eyes closed', 'out'], ['Mouth wide open', 'out']];
+  rules.forEach(([a, b], i) => { const k = eo(seg(t, L('gate2').t0 + 1.2 + i * 1.25, L('gate2').t0 + 1.7 + i * 1.25)) * (1 - kf); T(a, 72, 540 + i * 64, 38, {w: 600, a: k}); T(b, 480, 540 + i * 64, 38, {f: MONO, c: COL.acc, a: k}); });
+  if (kf < 1) {
+    g.save(); g.globalAlpha *= 1 - kf; const gx = 560, y = 1020, cw = 230, t0 = L('gate1').t0 - 0.2, spawn = 0.82, travel = 3.4;
+    line(gx, 790, gx, 1260, COL.acc, 3); T('gate', gx, 770, 30, {al: 'center', c: COL.acc, w: 600});
+    GQ.forEach((f, i) => { const st = t0 + i * spawn, p = (t - st) / travel; if (p < 0 || p > 1.3) return; const x = lerp(-cw, W + 40, p), rej = f.status !== 'ok', cx = x + cw / 2;
+      let yy = y - cw / 2, rot = 0, a = 1; if (rej && cx > gx) { const tt = (cx - gx) / (W / travel); yy += 900 * tt * tt; rot = tt * 0.6; a = clamp(1 - tt * 1.4); }
+      const xx = rej && cx > gx ? gx - cw / 2 + (cx - gx) * 0.25 : x;
+      g.save(); g.globalAlpha *= a; g.translate(xx + cw / 2, yy + cw / 2); g.rotate(rot); g.translate(-cw / 2, -cw / 2); faceCrop(f, 0, 0, cw); rect(0, 0, cw, cw, rej && cx > gx - 20 ? COL.red : COL.hair, rej && cx > gx - 20 ? 4 : 2);
+      if (cx > gx - 20) { if (rej) { rrect(10, cw - 52, cw - 20, 42, 6, 'rgba(255,91,79,0.92)'); T(RULE[f.status](f), cw / 2, cw - 21, 26, {al: 'center', w: 600}); } else { circ(cw - 26, 26, 17, COL.ok, null); T('✓', cw - 26, 35, 24, {al: 'center', c: COL.bg, w: 700}); } }
+      g.restore(); });
+    g.restore();
+  }
+  if (kf > 0) { // funnel 342 -> 40 -> 202
+    const a = kf, n1 = RA.videos + RA.photos, x1 = 150, x2 = 540, x3 = 930, yc = 900;
+    const h1 = 520, h2 = 520 * 40 / n1;
+    g.save(); g.globalAlpha *= a; g.fillStyle = 'rgba(255,154,60,0.16)'; g.beginPath(); g.moveTo(x1, yc - h1 / 2); g.bezierCurveTo(x1 + 200, yc - h1 / 2, x2 - 200, yc - h2 / 2, x2, yc - h2 / 2); g.lineTo(x2, yc + h2 / 2); g.bezierCurveTo(x2 - 200, yc + h2 / 2, x1 + 200, yc + h1 / 2, x1, yc + h1 / 2); g.closePath(); g.fill(); g.restore();
+    rect(x1 - 14, yc - h1 / 2, 14, h1, null, 0, a, 'rgba(242,236,227,0.75)'); rect(x2 - 4, yc - h2 / 2, 8, h2, null, 0, a, COL.acc);
+    const kc = eo(seg(t, t3 + 0.5, t3 + 2.2)); for (let i = 0; i < 202; i++) { const kk = clamp(kc * 202 - i); if (kk <= 0) break; const yy = yc - 300 + i * 600 / 202; g.save(); g.globalAlpha *= a * kk * 0.7; g.strokeStyle = COL.acc; g.lineWidth = 1.2; g.beginPath(); g.moveTo(x2, yc + (hash(i) - 0.5) * h2); g.bezierCurveTo(x2 + 160, yc, x3 - 160, yy, x3, yy); g.stroke(); g.restore(); }
+    T(String(n1), x1 - 7, yc - h1 / 2 - 40, 64, {f: LAT, w: 300, al: 'center', a}); T('sources', x1 - 7, yc + h1 / 2 + 60, 30, {al: 'center', c: COL.dim, a});
+    T('40', x2, yc - 70, 64, {f: LAT, w: 300, al: 'center', c: COL.acc, a}); T('passed', x2, yc + 100, 30, {al: 'center', c: COL.dim, a});
+    T(String(Math.round(202 * kc)), x3, yc - 330, 64, {f: LAT, w: 300, al: 'center', a: a * kc}); T('cuts', x3, yc + 360, 30, {al: 'center', c: COL.dim, a: a * kc});
+  }
+  T('Gates', 72, 460, 64, {w: 600, a: eo(seg(u, 0, .6)) * (1 - kf)});
+};
+// ===== LOOP =====
+SC.loop = (t, s) => {
+  const u = t - s.t0, X = 160, Y = 540, S = 760, im = seq('sq', 16.9), k3 = eio(seg(t, L('loop3').t0 - 0.2, L('loop3').t0 + 0.7));
+  if (k3 < 1) {
+    g.save(); g.globalAlpha *= 1 - k3; const z = 2.4, ex = (1685 - 840) / 2160, ey = 1000 / 2160; // zoom on eye
+    g.save(); clip(X, Y, S, S); if (im) g.drawImage(im, X + S / 2 - ex * 1080 * z * S / 1080, Y + S / 2 - ey * 1080 * z * S / 1080, 1080 * z * S / 1080, 1080 * z * S / 1080); g.restore(); corners(X - 12, Y - 12, S + 24, S + 24);
+    const cx = X + S / 2, cy = Y + S / 2; cross(cx, cy, 36, COL.acc2, 1); T('target', cx + 80, cy - 70, 28, {c: COL.acc2, w: 600});
+    const t2 = L('loop2').t0, r = t < t2 ? eo(seg(t, L('loop1').t0 + 1.4, L('loop1').t0 + 2.4)) : 1, rounds = [1, 0.45, 0.18, 0.06], ri = t < t2 ? 0 : Math.min(3, Math.floor((t - t2 - 0.6) / 1.35) + 1);
+    const prev = rounds[Math.max(0, ri - 1)], cur = rounds[ri], kk = t < t2 ? 1 : eio(seg((t - t2 - 0.6) % 1.35, 0.2, 0.9)), off = lerp(prev, cur, ri ? kk : 1) * r;
+    const mx = cx + 150 * off, my = cy - 95 * off; if (r > 0) { cross(mx, my, 30, COL.text, r); line(cx, cy, mx, my, COL.red, 3, r); T('rendered', mx + 60, my + 90, 28, {w: 600, a: r}); }
+    if (ri) T(`round ${ri}  measure → push back`, X, Y + S + 70, 32, {f: FONT, c: COL.acc2});
+    T('schematic', X + S - 10, Y + S - 20, 22, {al: 'right', c: COL.dim}); g.restore();
+  }
+  if (k3 > 0) { g.save(); g.globalAlpha *= k3;
+    T('12 – 18', W / 2, 820, 150, {f: LAT, w: 200, al: 'center', c: COL.acc}); T('pixels', W / 2, 900, 40, {al: 'center'});
+    T('median eye error in a 4K frame', W / 2, 980, 32, {al: 'center', c: COL.dim});
+    const bx = 90, bw = 900, kk = eo(seg(t, L('loop3').t0 + 0.8, L('loop3').t0 + 2.2)); rect(bx, 1120, bw, 14, null, 0, 1, COL.faint); rect(bx, 1120, Math.max(3, bw * 15 / 3840), 14, null, 0, 1, COL.acc);
+    T('frame width 3840 px', bx + bw, 1180, 26, {f: MONO, al: 'right', c: COL.dim}); T('15 px', bx, 1180, 26, {f: MONO, c: COL.acc, a: kk}); g.restore(); }
+  T(k3 > 0.5 ? 'Result' : 'Re-check', 72, 460, 52, {w: 600});
+};
+// ===== LIGHT =====
+const LUMA = []; async function lumaOf(src) { const im = await load(src); if (!im) return 0.3; const c = document.createElement('canvas'); c.width = 48; c.height = 48; const x = c.getContext('2d'); x.drawImage(im, 120, 120, 240, 240, 0, 0, 48, 48); const d = x.getImageData(0, 0, 48, 48).data; let s = 0; for (let i = 0; i < d.length; i += 4) s += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; return s / (d.length / 4) / 255; }
+SC.light = (t, s) => {
+  const u = t - s.t0, ts = L('light2').t0 + 0.8, sw = eio(seg(t, ts, ts + 1.8));
+  EX.forEach((e, i) => { const c = i % 3, r = Math.floor(i / 3), x = 72 + c * 318, y = 520 + r * 430, w = 300, ap = eo(seg(u, 0.1 + i * 0.12, 0.6 + i * 0.12));
+    const raw = img('/' + e.raw), fix = img('/' + e.fix), fx = 72 + 3 * 318 * sw - x; D(raw, x, y, w, w, ap);
+    if (fx > 0 && fix) { g.save(); clip(x, y, Math.min(w, fx), w); D(fix, x, y, w, w, ap); g.restore(); }
+    const lv = LUMA.length ? lerp(LUMA[i][0], LUMA[i][1], clamp(fx / w)) : 0.4; rect(x, y + w + 24, w, 8, null, 0, ap, COL.faint); rect(x, y + w + 24, w * clamp(lv * 1.6), 8, null, 0, ap, clamp(fx / w) > 0.5 ? COL.acc : 'rgba(242,236,227,0.7)');
+    T(`luma ${fmt(lv, 2)}`, x, y + w + 70, 24, {f: MONO, c: COL.dim, a: ap}); });
+  if (sw > 0 && sw < 1) line(72 + 3 * 318 * sw - 9, 480, 72 + 3 * 318 * sw - 9, 1430, COL.acc, 3);
+  T('Measure skin first', 72, 440, 52, {w: 600, a: eo(seg(u, 0, .6))}); T(sw > 0.5 ? 'evened out' : 'as shot', 1008, 440, 32, {al: 'right', c: sw > 0.5 ? COL.acc2 : COL.dim});
+};
+// ===== MUSIC =====
+const OM = {t0: () => L('music1').t0 - 0.3};
+SC.music = (t, s) => {
+  const pt = clamp(t - OM.t0(), 0, 16.5), win = 16, X = 60, Ww = 960, xt = x => X + Ww * x / win;
+  const S = 470, VX = (W - S) / 2, VY = 370, im = seq('sq', pt); D(im, VX, VY, S, S); corners(VX - 12, VY - 12, S + 24, S + 24); T(`${fmt(pt, 2)} s`, VX + S - 18, VY + 44, 26, {f: MONO, al: 'right', c: COL.text, sh: 8});
+  const wy = 1080, wh = 120; g.save(); g.fillStyle = 'rgba(242,236,227,0.22)'; for (let i = 0; i < Ww; i += 3) { const tt = i / Ww * win, e = ED.env[Math.floor(tt * ED.env_fps)] || 0, hh = Math.max(2, e * wh); g.fillStyle = tt <= pt ? 'rgba(255,154,60,0.85)' : 'rgba(242,236,227,0.22)'; g.fillRect(X + i, wy - hh, 2, hh * 2); } g.restore();
+  line(xt(ED.drop), wy - 160, xt(ED.drop), wy + 150, COL.acc2, 2, 1, [4, 6]); T(`drop ${fmt(ED.drop, 2)} s`, xt(ED.drop) + 10, wy - 140, 26, {f: MONO, c: COL.acc2});
+  const rows = [['8ths', 0.25, 0, ED.drop], ['16ths', 0.125, ED.drop, 15.0], ['32nds', 0.0625, 15.0, 99]];
+  rows.forEach(([nm, st, a, b], r) => { const y = 1240 + r * 56, act = pt >= a && pt < b; T(nm, X, y + 10, 26, {c: act ? COL.acc : COL.dim, w: act ? 600 : 400}); for (let x = 0; x < win; x += st) { const on = x >= a && x < b; line(xt(x), y - 12, xt(x), y + 12, on ? (x <= pt ? COL.acc : 'rgba(242,236,227,0.45)') : 'rgba(242,236,227,0.1)', 1.5); } });
+  const y = 1420; T('actual cuts', X, y + 10, 26, {c: COL.text, w: 600}); for (const x of T1) { if (x > win) break; line(xt(x), y - 14, xt(x), y + 14, x <= pt ? COL.text : 'rgba(242,236,227,0.2)', 1.5); }
+  line(xt(pt), wy - 150, xt(pt), y + 24, COL.text, 2);
+};
+// ===== EDIT =====
+const ROWS = ED.items.filter(e => e.tr === 1 && e.sec < 8).sort((a, b) => a.t - b.t);
+const lookOf = e => e.sat === 0 ? 'B&W' : e.slope ? 'col ' + e.slope.split(' ').map(x => (+x).toFixed(1)).join('/') : 'col';
+SC.edit = (t, s) => {
+  const u = t - s.t0, kt = eio(seg(t, L('edit2').t0 - 0.2, L('edit2').t0 + 0.8)), kv = eio(seg(t, L('edit2').t0 + 4.4, L('edit2').t0 + 5.2));
+  if (kt < 1) { g.save(); g.globalAlpha *= 1 - kt; const X = 72, Y = 520, rh = 50, cols = [['frame', 0], ['source', 150], ['scale', 520], ['look', 700]];
+    cols.forEach(([n, x]) => T(n, X + x, Y, 28, {c: COL.dim})); line(X, Y + 20, 1008, Y + 20, COL.hair, 2);
+    const n = Math.floor(u * 7.5); g.save(); clip(0, Y + 24, W, 900);
+    for (let i = Math.max(0, n - 17); i <= n && i < ROWS.length; i++) { const e = ROWS[i], y = Y + 70 + (i - Math.max(0, n - 17)) * rh, typ = i === n ? clamp((u * 7.5) % 1 * 2) : 1;
+      const cells = [String(Math.round(e.t * 60)).padStart(4, '0'), String(e.cid).replace(/^P_[A-Za-z]+_/, 'P_').slice(0, 20), '×' + fmt(e.zoom, 2), lookOf(e)];
+      cells.forEach((c, j) => T(c.slice(0, Math.ceil(c.length * typ)), X + cols[j][1], y, 28, {f: MONO, c: j === 0 ? COL.acc : COL.text, a: i === n ? 1 : 0.8})); }
+    g.restore(); T('Cut table', 72, 440, 52, {w: 600}); T(`${Math.min(n + 1, ROWS.length)} / ${ROWS.length}`, 1008, 440, 30, {f: MONO, al: 'right', c: COL.dim}); g.restore(); }
+  if (kt > 0) { g.save(); g.globalAlpha *= kt * (1 - kv * 0.85);
+    const X = 150, Ww = 880, Y = 520, lh = 58, sx = x => X + Ww * x / ED.dur;
+    const lanes = [['V15', 'title', ED.items.filter(e => e.tr === 15)], ['V9', 'vignette', [{t: 0, d: ED.dur}]], ['V8', 'leaks', [{t: 0, d: 23.27}, {t: 23.27, d: ED.dur - 23.27}]], ['V7', 'warm', (ED.pulse || []).map(p => ({t: Array.isArray(p) ? p[0] : p, d: 0.2}))], ['V4', 'Picture in picture', ED.items.filter(e => e.tr === 4)], ['V3', 'matte', ED.items.filter(e => e.tr === 1 && e.sec === 3)], ['V2', 'bars', ED.items.filter(e => e.tr === 1 && e.sec === 3)], ['V1', 'faces', ED.items.filter(e => e.tr === 1)], ['A1', 'music', [{t: 0, d: ED.dur}]]];
+    const build = seg(t, L('edit2').t0 + 0.2, L('edit2').t0 + 3.6);
+    lanes.forEach(([id, nm, its], r) => { const y = Y + r * lh; T(id, 72, y + 36, 24, {f: MONO, c: COL.dim}); rect(X, y + 6, Ww, lh - 12, null, 0, 1, 'rgba(242,236,227,0.04)');
+      for (const e of its) { const kk = eo(clamp((build * ED.dur - e.t) * 1.5)); if (kk <= 0) continue; const sec = e.sec ?? 9, c = id === 'A1' ? 'rgba(130,200,170,0.5)' : id === 'V1' ? ['#7d6a55', '#ff9a3c', '#c98a4a', '#e0b070', '#ffb062', '#b07040', '#b07040', '#d0a070', '#8a6f8f'][Math.min(8, sec)] : 'rgba(255,197,138,0.7)'; g.save(); g.globalAlpha *= kk; g.fillStyle = c; g.fillRect(sx(e.t), y + 10 - (1 - kk) * 30, Math.max(2, sx(e.t + e.d) - sx(e.t) - 1), lh - 20); g.restore(); } });
+    line(sx(build * ED.dur), Y - 10, sx(build * ED.dur), Y + lanes.length * lh + 6, COL.text, 2, build < 1 ? 1 : 0);
+    T('Built in Resolve by script', 72, 440, 52, {w: 600}); T(`${ED.items.length} clips · 9 tracks`, 1008, 440, 28, {f: FONT, al: 'right', c: COL.dim});
+    g.restore(); }
+  if (kv > 0) { const n = 17, kk = seg(t, L('edit2').t0 + 4.8, L('edit2').t1 + 0.2), cur = Math.min(n - 1, Math.floor(eio(kk) * n)), X = 140, Y = 720, w = 800, h = 450;
+    for (let i = Math.max(0, cur - 4); i <= cur; i++) { const d = cur - i, im = img(`/data/vers/v${String(i).padStart(2, '0')}.jpg`); g.save(); g.globalAlpha *= kv * (d === 0 ? 1 : 0.55 - d * 0.1); D(im, X - d * 26, Y - d * 34, w, h); rect(X - d * 26, Y - d * 34, w, h, COL.hair, 2); g.restore(); }
+    T(`v${cur + 1}`, X + w, Y + h + 90, 110, {f: LAT, w: 200, al: 'right', c: COL.acc, a: kv}); T('Same moment, different versions', X, Y + h + 80, 32, {c: COL.dim, a: kv}); }
+};
+// ===== PIP / SPLIT / 3D =====
+const R169 = (y = 620) => ({x: 40, y, w: 1000, h: 562.5});
+function winRect(e, R) { const [l, r, tp, b] = e.crop, s = R.w / 3840; return [R.x + l * s, R.y + tp * s, (3840 - l - r) * s, (2160 - tp - b) * s]; }
+const PIPS = [ED.items.find(e => e.tr === 4 && Math.abs(e.t - 10.267) < 0.01), ED.items.find(e => e.tr === 4 && Math.abs(e.t - 10.533) < 0.01)];
+SC.pip = (t, s) => {
+  const u = t - s.t0, R = R169(), which = u < (s.t1 - s.t0) * 0.5 ? 0 : 1, e = PIPS[which], im = seq('open', e.t + 0.1), kz = eio(seg(u % ((s.t1 - s.t0) * 0.5), 0.3, 1.4));
+  const [wx, wy, ww, wh] = winRect(e, R), cx = wx + ww / 2, cy = wy + wh / 2, z = lerp(1, 1.5, kz);
+  g.save(); clip(R.x, R.y, R.w, R.h); g.translate(cx, cy); g.scale(z, z); g.translate(-cx, -cy); D(im, R.x, R.y, R.w, R.h); rect(wx, wy, ww, wh, COL.acc, 3 / z); g.restore(); corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24);
+  T(which ? 'One mouth' : 'One eye', 72, R.y + R.h + 90, 44, {w: 600, c: COL.acc2}); T('One feature at a time over the base', 72, 520, 34, {c: COL.dim, a: eo(seg(u, 0, .6))}); T('Picture in picture', 72, 460, 52, {w: 600, a: eo(seg(u, 0, .5))});
+};
+const SPL = (() => { const r = ED.items.find(e => e.tr === 4 && Math.abs(e.t - 9.417) < 0.01), l = ED.items.find(e => e.tr === 1 && e.t <= 9.43 && e.t + e.d > 9.43); return {l, r}; })();
+const dOf = cid => (DT.bycid[cid] || '').replace(/-/g, '.');
+SC.split = (t, s) => {
+  const u = t - s.t0, R = R169(), im = seq('open', 9.45), k = eio(seg(u, 0.6, 2.0)), off = (1 - k) * 150;
+  if (im) { Dsrc(im, 0, 0, im.width / 2, im.height, R.x - off, R.y + (1 - k) * 30, R.w / 2, R.h); Dsrc(im, im.width / 2, 0, im.width / 2, im.height, R.x + R.w / 2 + off, R.y - (1 - k) * 30, R.w / 2, R.h); }
+  line(W / 2, R.y - 40, W / 2, R.y + R.h + 40, COL.acc, 2.5, eo(seg(u, 1.6, 2.2)));
+  T(dOf(SPL.l && SPL.l.cid) || 'one day', R.x + 10, R.y + R.h + 70, 30, {f: MONO, c: COL.text}); T(dOf(SPL.r && SPL.r.cid) || 'another day', R.x + R.w - 10, R.y + R.h + 70, 30, {f: MONO, al: 'right', c: COL.text});
+  T('left half', R.x + 10, R.y + R.h + 116, 26, {c: COL.dim}); T('right half', R.x + R.w - 10, R.y + R.h + 116, 26, {al: 'right', c: COL.dim});
+  T('Split face', 72, 460, 52, {w: 600}); T('Line up the center: one face', 72, 520, 34, {c: COL.dim, a: eo(seg(u, 1.6, 2.4))});
+};
+SC['3d'] = (t, s) => {
+  const u = t - s.t0, base = img('/data/layers/base.jpg'), bars = img('/data/layers/bars.png'), fg = img('/data/layers/fg.png');
+  const kc = eio(seg(t, L('3d1').t0 + 1.4, L('3d1').t0 + 3.4)), kr = eio(seg(t, L('3d1').t0 + 3.6, L('3d1').t0 + 4.2)), t2 = L('3d2').t0;
+  const R = R169(640), layers = [[base, '① frame', 0], [bars, '② two bars', 1], [fg, '③ cutout', 2]];
+  if (t < t2 - 0.2) {
+    if (kr < 1) { g.save(); g.globalAlpha *= 1 - kr; layers.forEach(([im, nm, i]) => { const ap = eo(seg(u, 0.1 + i * 0.3, 0.6 + i * 0.3)), dy = lerp((1 - i) * 250, 0, kc); g.save(); g.globalAlpha *= ap; g.translate(W / 2, R.y + R.h / 2 + dy); g.transform(1, 0, lerp(-0.55, 0, kc), lerp(0.42, 1, kc), 0, 0); g.scale(lerp(0.82, 1, kc), lerp(0.82, 1, kc)); D(im, -R.w / 2, -R.h / 2, R.w, R.h); if (kc < 0.9) rect(-R.w / 2, -R.h / 2, R.w, R.h, i === 2 ? COL.acc : COL.hair, 3); g.restore();
+      T(nm, 1008, R.y + R.h / 2 + dy * 1.0 + 10 - (i - 1) * 12, 32, {al: 'right', w: 600, c: i === 2 ? COL.acc2 : COL.text, a: ap * (1 - kc)}); }); g.restore(); }
+    if (kr > 0) { const ot = 10.85 + (t - (L('3d1').t0 + 3.6)), im = seq('open', Math.min(ot, 12.4)); D(im, R.x, R.y, R.w, R.h, kr); corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24, kr); }
+    T('Naked-eye 3D', 72, 460, 52, {w: 600}); T('The cutout sits over the bars', 72, 520, 34, {c: COL.dim});
+  } else {
+    const k = eo(seg(t, t2 - 0.2, t2 + 0.5)); D(base, R.x, R.y, R.w, R.h, k); D(bars, R.x, R.y, R.w, R.h, k); D(fg, R.x, R.y, R.w, R.h, k);
+    const lx = R.x + R.w * 0.47, ly = R.y + R.h * 0.08, lr = 190, z = 3.2, kl = eback(seg(t, t2 + 0.6, t2 + 1.3));
+    if (kl > 0 && fg) { g.save(); g.beginPath(); g.arc(W / 2 + 120, 1250, lr * kl, 0, Math.PI * 2); g.clip(); const sx = (lx - R.x) / R.w * fg.width, sy = (ly - R.y) / R.h * fg.height, sw = lr * 2 / z / R.w * fg.width; g.fillStyle = '#000'; g.fillRect(0, 0, W, H); Dsrc(base, sx - sw / 2, sy - sw / 2, sw, sw, W / 2 + 120 - lr, 1250 - lr, lr * 2, lr * 2); Dsrc(bars, sx - sw / 2, sy - sw / 2, sw, sw, W / 2 + 120 - lr, 1250 - lr, lr * 2, lr * 2); Dsrc(fg, sx - sw / 2, sy - sw / 2, sw, sw, W / 2 + 120 - lr, 1250 - lr, lr * 2, lr * 2); g.restore();
+      circ(W / 2 + 120, 1250, lr * kl, null, COL.acc, 3); circ(lx, ly, 40, null, COL.acc, 2, clamp(kl)); line(lx, ly + 40, W / 2 + 120 - lr * 0.7, 1250 - lr * 0.7, COL.acc, 1.5, clamp(kl)); }
+    T('Edges', 72, 460, 52, {w: 600}); T('A finer matting model', 72, 520, 34, {c: COL.dim}); T('hair edge ×3.2', 72, 1250, 28, {f: FONT, c: COL.acc2, a: clamp(kl)});
+  }
+};
+// ===== WALL / BREAK / TUNNEL =====
+SC.wall = (t, s) => {
+  const u = t - s.t0, R = R169(640), t2 = L('end2').t0, lv = [1, 2, 4, 8, 16], ts = [s.t0 - 0.2, t2 + 1.0, t2 + 1.8, t2 + 2.6, t2 + 3.4];
+  let li = 0; for (let i = 0; i < lv.length; i++) if (t >= ts[i]) li = i; const n = lv[li], kk = seg(t, ts[li], ts[li] + 0.5);
+  const at = img('/data/bricks_atlas.jpg'), cw = R.w / n, chh = R.h / n;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) { const idx = r * n + c, ks = eo(clamp(kk * 2.2 - hash(idx + n * 7) * 1.2)), x = R.x + c * cw, y = R.y + r * chh, pad = n >= 8 ? 1 : 3;
+    const sc = lerp(0.7, 1, ks); g.save(); g.translate(x + cw / 2, y + chh / 2); g.scale(sc, sc);
+    if (n <= 4) { const im = img(`/data/bricks/b${String(n === 1 ? 0 : n === 2 ? 1 + idx : 5 + idx).padStart(2, '0')}.jpg`); D(im, -cw / 2 + pad, -chh / 2 + pad, cw - pad * 2, chh - pad * 2, ks); }
+    else if (at) { const ai = n === 16 ? idx : (r * 2) * 16 + c * 2; Dsrc(at, (ai % 16) * 160, Math.floor(ai / 16) * 90, 160, 90, -cw / 2 + pad, -chh / 2 + pad, cw - pad * 2, chh - pad * 2, ks); }
+    g.restore(); }
+  corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24);
+  lv.forEach((v, i) => { const x = 72 + i * 190; T(String(v * v), x, R.y + R.h + 110, 54, {f: LAT, w: i === li ? 500 : 200, c: i === li ? COL.acc : i < li ? COL.text : 'rgba(242,236,227,0.25)'}); if (i < lv.length - 1) T('→', x + 120, R.y + R.h + 104, 30, {c: COL.dim}); });
+  T('bricks', 72, R.y + R.h + 160, 28, {c: COL.dim}); T('Ending', 72, 460, 52, {w: 600}); T('One face splits on the beat', 72, 520, 34, {c: COL.dim, a: eo(seg(t, t2, t2 + .6))});
+};
+const TT = 25.52, PH = [['wall', 23.27, TT], ['split', TT, TT + 0.55], ['fall', TT + 0.55, TT + 1.75], ['pause', TT + 1.75, TT + 2.25], ['gather', TT + 2.25, TT + 3.3], ['dive', TT + 3.3, TT + 4.9], ['title', TT + 4.9, 33.81]];
+function phaseBar(ot, y, a = 1, hi) { const x0 = 72, x1 = 1008, t0 = 25.0, t1 = 33.81, sx = v => lerp(x0, x1, (clamp(v, t0, t1) - t0) / (t1 - t0));
+  PH.forEach(([nm, a0, b0]) => { const on = ot >= a0 && ot < b0, x = sx(a0), w = sx(b0) - x; rect(x + 2, y, w - 4, 10, null, 0, a, on || nm === hi ? COL.acc : ot >= b0 ? 'rgba(242,236,227,0.55)' : COL.faint); T(nm, x + w / 2, y + 52, 21, {al: 'center', w: on || nm === hi ? 600 : 400, c: on || nm === hi ? COL.acc : COL.dim, a}); });
+  line(sx(ot), y - 18, sx(ot), y + 26, COL.text, 2, a); }
+const BR = () => { const a = L('end3').t0 - 0.3, b = L('end4').t0 + 0.4, c = L('end4').t1 + 1.5; return {a, b, c}; };
+function breakOT(t) { const {a, b, c} = BR(); if (t < b) return lerp(TT + 0.3, TT + 1.75, eio(seg(t, a, b))); return lerp(TT + 1.75, TT + 2.2, seg(t, b, c + 0.3)); }
+SC.break = (t, s) => {
+  const ot = breakOT(t), R = {x: 0, y: 600, w: 1080, h: 607.5}, im = seq('open', ot), {b, c} = BR(), quiet = seg(t, L('end4').t1 + 0.1, L('end4').t1 + 0.5) * (1 - seg(t, c - 0.2, c + 0.2));
+  D(im, R.x, R.y, R.w, R.h); phaseBar(ot, 1310, 1 - quiet * 0.6, ot >= TT + 1.75 ? 'pause' : null);
+  T('Break and fall', 72, 460, 52, {w: 600, a: 1 - quiet}); if (t > b - 0.2) T('Then a deliberate pause', 72, 520, 34, {c: COL.acc2, a: eo(seg(t, b - 0.2, b + 0.4)) * (1 - quiet)});
+  if (quiet > 0) { g.save(); g.globalAlpha = quiet * 0.35; g.fillStyle = '#000'; g.fillRect(0, 0, W, H); g.restore(); }
+};
+SC.tunnel = (t, s) => {
+  const t5 = L('end5').t0 - 0.3, t6 = L('end6').t0, ot = Math.min(TT + 2.25 + (t - t5), 31.6), R = {x: 0, y: 600, w: 1080, h: 607.5}, k6 = eio(seg(t, t6 - 0.1, t6 + 0.7));
+  if (k6 < 1) { g.save(); g.globalAlpha *= 1 - k6; D(seq('open', ot), R.x, R.y, R.w, R.h); phaseBar(ot, 1310, 1); T('Gather, then dive', 72, 460, 52, {w: 600}); g.restore(); }
+  if (k6 > 0) { g.save(); g.globalAlpha *= k6; const rows = [['First version', [['wall', 3], ['tunnel', 3], ['title', 2]]], ['Now', [['wall', 2.2], ['split', 0.6], ['fall', 1.2], ['pause', 0.9], ['gather', 1.05], ['dive', 1.6], ['title', 1.6]]]];
+    rows.forEach(([nm, ph], r) => { const y = 760 + r * 300, tot = ph.reduce((a, p) => a + p[1], 0); let x = 72; T(nm, 72, y - 40, 36, {w: 600, c: r ? COL.text : COL.dim});
+      ph.forEach(([p, d], i) => { const w = 936 * d / tot, hot = p === 'pause' && r === 1, kk = eo(seg(t, t6 + 0.3 + r * 0.8 + i * 0.12, t6 + 0.7 + r * 0.8 + i * 0.12)); rrect(x + 3, y, w - 6, 90, 8, hot ? COL.acc : r ? 'rgba(242,236,227,0.12)' : 'rgba(242,236,227,0.06)', hot ? null : COL.faint, 2, kk); T(p, x + w / 2, y + 56, hot ? 26 : 20, {al: 'center', c: hot ? COL.bg : r ? COL.text : COL.dim, w: hot ? 700 : 500, a: kk}); x += w; }); });
+    T('One pause added', 72, 1300, 40, {w: 600, c: COL.acc2, a: eo(seg(t, t6 + 2.4, t6 + 3.0))}); T('and the ending lands', 72, 1360, 40, {w: 600, a: eo(seg(t, t6 + 2.9, t6 + 3.5))}); g.restore(); }
+};
+// ===== FAIL =====
+SC.fail = (t, s) => {
+  const u = t - s.t0, ks = ['fail1', 'fail2', 'fail3', 'fail4'], R = R169(620);
+  let cur = 0; ks.forEach((k, i) => { if (t >= L(k).t0 - 0.3) cur = i; }); const kin = eo(seg(t, L(ks[cur]).t0 - 0.3, L(ks[cur]).t0 + 0.3));
+  T('What went wrong', 72, 460, 52, {w: 600}); [1, 2, 3].forEach(i => { const on = cur >= i; circ(780 + i * 70, 444, 18, on ? COL.acc : null, on ? null : COL.hair, 2); T(String(i), 780 + i * 70, 453, 22, {al: 'center', f: MONO, c: on ? COL.bg : COL.dim, w: 700}); });
+  g.save(); g.globalAlpha *= kin;
+  if (cur === 0) { ['White flashes', 'A vertical line', 'Blown-out ending'].forEach((n, i) => { const k = eo(seg(u, 0.3 + i * 0.25, 0.8 + i * 0.25)); rrect(72, 640 + i * 190, 936, 150, 10, 'rgba(242,236,227,0.05)', COL.faint, 2, k); T(`0${i + 1}`, 110, 735 + i * 190, 40, {f: MONO, c: COL.acc, a: k}); T(n, 220, 735 + i * 190, 44, {w: 600, a: k}); }); }
+  if (cur === 1) { const t0 = L('fail2').t0, pre = img('/data/fail/flash_pre.jpg'), fl = img('/data/fail/flash.jpg'), now = seq('open', 2.8), ph = (t - t0); const strobe = ph < 2.6 && (Math.floor(ph * 30) % 18 < 3);
+    const kn = eo(seg(t, t0 + 2.8, t0 + 3.4)); D(pre, R.x, R.y, R.w, R.h, 1 - kn); if (strobe) { g.save(); g.fillStyle = '#fff'; g.globalAlpha *= 0.92; g.fillRect(R.x, R.y, R.w, R.h); g.restore(); }
+    D(now, R.x, R.y, R.w, R.h, kn); if (kn > 0) { g.save(); g.globalCompositeOperation = 'screen'; const gr = g.createRadialGradient(W / 2, R.y + R.h * 0.4, 50, W / 2, R.y + R.h * 0.4, 600); gr.addColorStop(0, `rgba(255,150,60,${0.35 * kn * (0.6 + 0.4 * Math.sin(ph * 5))})`); gr.addColorStop(1, 'rgba(255,150,60,0)'); g.fillStyle = gr; g.fillRect(R.x, R.y, R.w, R.h); g.restore(); }
+    corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24); T(kn > 0.5 ? 'Now: warm light' : 'Before: white flash', 72, R.y + R.h + 90, 42, {w: 600, c: kn > 0.5 ? COL.acc2 : COL.text}); }
+  if (cur === 2) { const im = img('/data/fail/line.jpg'), t0 = L('fail3').t0, lx = R.x + R.w * FL.line.x / 1280, kl = eback(seg(t, t0 + 1.0, t0 + 1.7)); D(im, R.x, R.y, R.w, R.h); corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24);
+    if (kl > 0 && im) { const lr = 170, cy = R.y + R.h * 0.35, z = 4, sx = FL.line.x, sy = (cy - R.y) / R.h * 720, sw = lr * 2 / z * 1280 / R.w; g.save(); g.beginPath(); g.arc(lx, cy, lr * kl, 0, Math.PI * 2); g.clip(); Dsrc(im, sx - sw / 2, sy - sw / 2, sw, sw, lx - lr, cy - lr, lr * 2, lr * 2); g.restore(); circ(lx, cy, lr * kl, null, COL.acc, 3); }
+    T('A thin line, start to finish', 72, R.y + R.h + 90, 42, {w: 600}); T('It came from a scratch overlay', 72, R.y + R.h + 150, 32, {c: COL.dim, a: eo(seg(t, t0 + 2.5, t0 + 3.1))}); }
+  if (cur === 3) { const a = img('/data/fail/bright.jpg'), b = img('/data/fail/fixed.jpg'), t0 = L('fail4').t0, dx = R.x + R.w * lerp(1, 0.5, eio(seg(t, t0 + 1.2, t0 + 2.6))); D(a, R.x, R.y, R.w, R.h); if (b) { g.save(); clip(dx, R.y, R.x + R.w - dx, R.h); D(b, R.x, R.y, R.w, R.h); g.restore(); }
+    line(dx, R.y - 30, dx, R.y + R.h + 30, COL.acc, 3); circ(dx, R.y + R.h / 2, 22, COL.acc, null); T('⇆', dx, R.y + R.h / 2 + 10, 26, {al: 'center', c: COL.bg, w: 700}); corners(R.x - 12, R.y - 12, R.w + 24, R.h + 24);
+    T('Glow + leaks: pure white', R.x + 10, R.y + R.h + 90, 36, {w: 600}); T('fixed', R.x + R.w - 10, R.y + R.h + 90, 36, {al: 'right', w: 600, c: COL.acc2}); }
+  g.restore();
+};
+// ===== FLOW =====
+const STEPS = ['Find footage', 'Detect faces', 'Align', 'Gate', 'Re-check', 'Even out light', 'Extract beats', 'Write cut table', 'Build timeline', 'Make the ending'];
+SC.flow = (t, s) => {
+  const u = t - s.t0, t1 = L('flow1').t0, k2 = eio(seg(t, L('flow2').t0 + 1.9, L('flow2').t0 + 2.6)), X = 150, Y0 = 470, dy = 92, kk = seg(t, t1 + 0.2, L('flow2').t0 + 1.6);
+  g.save(); g.globalAlpha *= 1 - 0.75 * k2;
+  line(X, Y0, X, Y0 + dy * (STEPS.length - 1), COL.faint, 3); line(X, Y0, X, Y0 + dy * (STEPS.length - 1) * eio(kk), COL.acc, 3);
+  STEPS.forEach((n, i) => { const on = eio(kk) * (STEPS.length - 1) >= i - 0.05, y = Y0 + i * dy; circ(X, y, on ? 14 : 10, on ? COL.acc : COL.bg, on ? null : COL.hair, 2); T(String(i + 1).padStart(2, '0'), X - 50, y + 10, 24, {f: MONO, al: 'right', c: on ? COL.acc : COL.dim}); T(n, X + 50, y + 13, 38, {w: on ? 600 : 400, c: on ? COL.text : COL.dim}); });
+  const done = eo(seg(kk, 0.95, 1)); if (done > 0) { const im = seq('sq', 22.0); D(im, 640, 860, 340, 340, done); corners(628, 848, 364, 364, done); T('Final', 810, 1260, 32, {al: 'center', w: 600, a: done, c: COL.acc2}); }
+  g.restore(); T('Looking back', 72, 400, 40, {w: 600, c: COL.dim, a: 1 - k2});
+  if (k2 > 0) { g.save(); g.globalAlpha *= k2; rrect(72, 660, 936, 560, 16, 'rgba(11,10,9,0.86)', COL.faint, 2);
+    T('AI', 120, 780, 44, {f: LAT, w: 300, c: COL.dim}); T('Fast, and never tired', 120, 850, 44, {w: 500, c: COL.dim}); line(120, 920, 960, 920, COL.faint, 2);
+    const k3 = eo(seg(t, L('flow2').t0 + 3.2, L('flow2').t0 + 3.9)); T('Me', 120, 1010, 44, {w: 600, c: COL.acc, a: k3}); T('Which cut looks right, where to pause', 120, 1085, 48, {w: 600, a: k3}); T('seen again and again', 120, 1150, 34, {c: COL.dim, a: eo(seg(t, L('flow2').t0 + 4.5, L('flow2').t0 + 5.2))}); g.restore(); }
+};
+// ===== FULL / CTA =====
+SC.full = (t, s) => {
+  const o0 = s.open_t0, ot = clamp(t - o0, 0, 33.79), S = 1000, X = 40, Y = 470, ki = eo(seg(t, s.t0, s.t0 + 0.6));
+  const im = seq('sq', ot); D(im, X, Y, S, S, ki * (t < o0 ? 0.35 : 1)); corners(X - 12, Y - 12, S + 24, S + 24, ki);
+  if (t < o0) { T('Full cut', W / 2, Y + S / 2 - 10, 96, {al: 'center', w: 600, a: ki}); T('A Master’s Cut · opening', W / 2, Y + S / 2 + 70, 36, {al: 'center', c: COL.acc2, a: ki}); }
+  const p = ot / 33.81; rect(X, Y + S + 40, S, 4, null, 0, ki, COL.faint); rect(X, Y + S + 40, S * p, 4, null, 0, ki, COL.acc);
+  T(`00:${fmt(ot, 1).padStart(4, '0')} / 00:33.8`, X + S, Y + S + 90, 26, {f: MONO, al: 'right', c: COL.dim, a: ki}); T('A MASTER\'S CUT', X, Y + S + 90, 24, {f: LAT, ls: 6, c: COL.dim, a: ki});
+};
+SC.cta = (t, s) => {
+  const u = t - s.t0, t2 = L('cta2').t0, k2 = eio(seg(t, t2 - 0.2, t2 + 0.6));
+  g.save(); g.globalAlpha *= 1 - k2; const ki = eo(seg(u, 0.1, 0.8));
+  T('The pause', 72, 640, 76, {w: 600, a: ki}); T('before the tunnel. Keep it?', 72, 730, 44, {c: COL.dim, a: ki});
+  const ka = eback(seg(t, L('cta1').t0 + 2.2, L('cta1').t0 + 2.8)), kb = eback(seg(t, L('cta1').t0 + 2.9, L('cta1').t0 + 3.5));
+  rrect(72, 830, 440, 170, 20, 'rgba(255,154,60,0.12)', COL.acc, 3, clamp(ka)); T('Keep it', 292, 940, 64, {al: 'center', w: 600, c: COL.acc2, a: clamp(ka)});
+  rrect(568, 830, 440, 170, 20, 'rgba(242,236,227,0.05)', COL.hair, 3, clamp(kb)); T('Cut it', 788, 940, 64, {al: 'center', w: 600, a: clamp(kb)});
+  const kc = eo(seg(t, L('cta1').t1 - 1.6, L('cta1').t1 - 0.8)); T('Tell me in the comments', 72, 1110, 40, {w: 500, c: COL.acc2, a: kc});
+  for (let i = 0; i < 6; i++) { const ph = (u * 0.35 + hash(i)) % 1, x = 140 + hash(i + 9) * 800, y = 1400 - ph * 300; g.save(); g.globalAlpha *= kc * Math.sin(ph * Math.PI) * 0.5; rrect(x, y, 90, 56, 18, null, COL.acc2, 2); T('…', x + 45, y + 36, 30, {al: 'center', c: COL.acc2}); g.restore(); }
+  g.restore();
+  if (k2 > 0) { g.save(); g.globalAlpha *= k2; T('Open source', 72, 700, 40, {c: COL.dim}); T('Code, data and tutorial', 72, 790, 64, {w: 600});
+    const S = 420, im = seq('sq', 16.9); D(im, 72, 880, S, S); corners(60, 868, S + 24, S + 24); cross(72 + (1685 - 840) / 2160 * S, 880 + 1000 / 2160 * S, 12); cross(72 + (2155 - 840) / 2160 * S, 880 + 1000 / 2160 * S, 12); T('github.com/syydaniel/face-aligned-montage', 72, 1400, 30, {f: MONO, c: COL.acc2});
+    const kf = seg(t, t2 + 2.4, t2 + 3.0), kp = eback(seg(t, t2 + 1.2, t2 + 1.8)); const done = kf >= 1; rrect(560, 1020, 448, 130, 65, done ? 'rgba(242,236,227,0.1)' : COL.acc, done ? COL.hair : null, 2, clamp(kp)); T('Link in post', 784, 1105, 44, {al: 'center', w: 600, c: done ? COL.text : COL.bg, a: clamp(kp)});
+    if (kf > 0 && kf < 1) circ(784, 1085, 40 + kf * 260, null, COL.acc2, 3, 1 - kf); g.restore(); }
+};
+// ---------- header / subs / grain ----------
+const KEYW = ['thirty-three', 'eyes', 'ghost', 'six', 'template', 'gates', 'forty', 'pixels', 'drop', 'thirty-second', 'table', 'script', 'versions', 'halo', 'bricks', 'hold', 'nothing', 'pause', 'flat', 'white', 'warm', 'line', 'myself', 'source', 'comments'];
+function subs(t) {
+  const s = TL.subs.find(x => t >= x.t0 && t < x.t1 + 0.12); if (!s) return; const a = clamp((t - s.t0) / 0.1) * clamp((s.t1 + 0.12 - t) / 0.1), size = 46, maxW = 940;
+  const words = s.text.split(/\s+/).filter(Boolean), lines = [[]]; for (const w of words) { const cur = lines[lines.length - 1]; if (cur.length && TW([...cur, w].join(' '), size, 500) > maxW) lines.push([w]); else cur.push(w); }
+  const hot = w => /\d/.test(w) || KEYW.includes(w.toLowerCase().replace(/[^a-z0-9-]/g, ''));
+  const y0 = 1560 - (lines.length - 1) * 60, wmax = Math.max(...lines.map(l => TW(l.join(' '), size, 500)));
+  g.save(); g.globalAlpha = a; g.fillStyle = 'rgba(11,10,9,0.42)'; g.filter = 'blur(18px)'; g.fillRect(W / 2 - wmax / 2 - 30, y0 - 52, wmax + 60, 60 * lines.length + 24); g.filter = 'none'; g.restore();
+  lines.forEach((l, i) => { let x = W / 2 - TW(l.join(' '), size, 500) / 2; for (const w of l) { T(w, x, y0 + i * 60, size, {w: hot(w) ? 600 : 500, c: hot(w) ? COL.acc2 : COL.text, a, sh: 10}); x += TW(w + ' ', size, hot(w) ? 600 : 500); } });
+}
+const GR = []; for (let i = 0; i < 6; i++) { const c = document.createElement('canvas'); c.width = 360; c.height = 640; const x = c.getContext('2d'), d = x.createImageData(360, 640); seed = 97 + i * 13; for (let j = 0; j < d.data.length; j += 4) { const v = 128 + (rnd() - 0.5) * 255; d.data[j] = d.data[j + 1] = d.data[j + 2] = v; d.data[j + 3] = 255; } x.putImageData(d, 0, 0); GR.push(c); }
+function header(t, sc, prevSc, xf) {
+  T("A MASTER'S CUT  ·  BEHIND THE SCENES", 72, 170, 22, {f: LAT, ls: 5, c: COL.dim});
+  T('AI voice · AI music', 1008, 170, 20, {al: 'right', c: 'rgba(242,236,227,0.42)'});
+  const draw = (c, a) => { if (!c || a <= 0) return; const [num, ...rest] = c.split(' '); const isN = /^\d+$/.test(num); if (isN) { T(num, 72, 244, 30, {f: MONO, c: COL.acc, a}); T(rest.join(' '), 130, 244, 34, {w: 600, a}); } else T(c, 72, 244, 34, {w: 600, a, c: COL.acc2}); };
+  if (prevSc && prevSc.chap !== sc.chap && xf < 1) { draw(prevSc.chap, 1 - xf); draw(sc.chap, xf); } else draw(sc.chap, 1);
+  const p = t / TL.total; line(72, 282, 1008, 282, COL.faint, 2); line(72, 282, 72 + 936 * p, 282, COL.acc, 2);
+  for (const s2 of TL.scenes) if (s2.chap && s2.chap !== 'Full cut') { const x = 72 + 936 * s2.t0 / TL.total; line(x, 276, x, 288, 'rgba(242,236,227,0.3)', 2); }
+}
+const LA = document.createElement('canvas'); LA.width = W; LA.height = H; const LB = document.createElement('canvas'); LB.width = W; LB.height = H; const DUM = document.createElement('canvas').getContext('2d');
+function drawScene(id, t, s, layer) { g = layer; g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, W, H); g.globalAlpha = 1; sceneT0 = s.t0; try { SC[id](t, s); } catch (e) { console.error(id, e); } }
+function compose(t, target) {
+  const SS = TL.scenes; let i = SS.findIndex(s => t >= s.t0 && t < s.t1); if (i < 0) i = SS.length - 1; const s = SS[i], XF = 0.45, xf = i > 0 ? eio(seg(t, s.t0, s.t0 + XF)) : 1;
+  const useLayers = target === main;
+  if (!useLayers) { g = DUM; if (i > 0 && xf < 1) SC[SS[i - 1].id](t, SS[i - 1]); SC[s.id](t, s); return; }
+  g = main; g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.fillStyle = COL.bg; g.fillRect(0, 0, W, H);
+  const bg = g.createRadialGradient(W / 2, 760, 40, W / 2, 760, 1100); bg.addColorStop(0, 'rgba(255,150,70,0.07)'); bg.addColorStop(1, 'rgba(255,150,70,0)'); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  if (i > 0 && xf < 1) { drawScene(SS[i - 1].id, t, SS[i - 1], LB.getContext('2d')); g = main; g.globalAlpha = 1 - xf; g.drawImage(LB, 0, (xf) * -16); }
+  drawScene(s.id, t, s, LA.getContext('2d')); g = main; g.globalAlpha = xf; g.drawImage(LA, 0, (1 - xf) * 16); g.globalAlpha = 1;
+  header(t, s, i > 0 ? SS[i - 1] : null, xf);
+  if (s.id !== 'full' || t < s.open_t0) subs(t);
+  g.save(); g.globalCompositeOperation = 'overlay'; g.globalAlpha = 0.09; g.imageSmoothingEnabled = false; g.drawImage(GR[Math.floor(t * 30) % 6], 0, 0, W, H); g.restore();
+  const vg = g.createRadialGradient(W / 2, H / 2, 500, W / 2, H / 2, 1250); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
+}
+async function renderAt(t) { NEED.clear(); COLLECT = true; try { compose(t, null); } catch (e) { } COLLECT = false; await Promise.all([...NEED].map(load)); gc(); compose(t, main); }
+// preload statics
+const PRE = ['/data/raw_atlas.jpg', '/data/bricks_atlas.jpg', '/data/layers/base.jpg', '/data/layers/bars.png', '/data/layers/fg.png', '/' + MESH.img, ...FA.faces.map(f => '/' + f.img), ...EX.flatMap(e => ['/' + e.raw, '/' + e.fix]), '/data/fail/flash_pre.jpg', '/data/fail/flash.jpg', '/data/fail/line.jpg', '/data/fail/bright.jpg', '/data/fail/fixed.jpg', ...Array.from({length: 17}, (_, i) => `/data/vers/v${String(i).padStart(2, '0')}.jpg`), ...Array.from({length: 21}, (_, i) => `/data/bricks/b${String(i).padStart(2, '0')}.jpg`)];
+await Promise.all(PRE.map(load));
+for (const e of EX) LUMA.push([await lumaOf('/' + e.raw), await lumaOf('/' + e.fix)]);
+await document.fonts.load(`600 50px "PingFang SC"`); await document.fonts.load(`500 50px "PingFang SC"`); await document.fonts.load(`300 50px "Helvetica Neue"`);
+window.renderFrame = async i => { await renderAt(i / FPS); return cv.toDataURL('image/jpeg', 0.92).split(',')[1]; };
+window.renderAt = renderAt; window.TOTAL = TL.total; window.READY = true;
+if (Q.has('t')) { await renderAt(+Q.get('t')); }
+else if (!Q.has('capture')) { let t0 = performance.now(); const loop = async () => { await renderAt(((performance.now() - t0) / 1000) % TL.total); requestAnimationFrame(loop); }; loop(); }
+</script></body></html>

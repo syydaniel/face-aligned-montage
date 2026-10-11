@@ -1,0 +1,52 @@
+"""English narration for the LinkedIn cut. Same keys and scenes as lines.py."""
+import os
+MROOT = os.environ.get('MONTAGE_ROOT', os.path.abspath('.'))          # working dir of the montage pipeline
+XROOT = os.environ.get('EXPLAINER_ROOT', os.path.abspath('.'))        # working dir of the explainer
+MOUT = os.environ.get('MONTAGE_OUT', os.path.join(MROOT, 'out'))
+MFINAL = os.environ.get('MONTAGE_FINAL', os.path.join(MOUT, 'opening_4k.mp4'))
+LINES = {
+ 'hook1': ('hook', 'This thirty-three second opening swaps my face more than two hundred times.'),
+ 'hook2': ('hook', 'But watch my eyes. They barely move.'),
+ 'hook3': ('hook', "The full cut is at the end. First, here's how I built it."),
+ 'why1':  ('why', "I'm finishing my master's, and I wanted an opening for a montage of these two years."),
+ 'why2':  ('why', 'On my phone I found eighty-eight videos and two hundred fifty-four photos of myself.'),
+ 'why3':  ('why', 'The idea: flash through all of them, with my eyes, nose and mouth locked in one place.'),
+ 'prob1': ('ghost', 'The problem is, every face has a different size and angle.'),
+ 'prob2': ('ghost', 'Stack four of them, and you get a ghost.'),
+ 'lm1':   ('mesh', 'Step one, find the face. A landmark model marks four hundred seventy-eight points on it.'),
+ 'lm2':   ('mesh', 'I only use six. The eyes, the tip of the nose, the corners of the mouth, and the chin.'),
+ 'lm3':   ('align', 'Then I fixed one template face, and fitted every photo to it using only scale, rotation and position.'),
+ 'lm5':   ('align', 'Stack them again, and the ghost is gone.'),
+ 'gate1': ('gate', 'But a turned head never fits.'),
+ 'gate2': ('gate', 'So I added gates. Head turned more than eight degrees, out. Eyes closed, out. Mouth wide open, out.'),
+ 'gate3': ('gate', 'In the end, two hundred cuts came from just forty sources.'),
+ 'loop1': ('loop', 'Another trap. On paper it was aligned, but the render came out slightly off.'),
+ 'loop2': ('loop', 'So the code measures the rendered frame, pushes the error back, and repeats.'),
+ 'loop3': ('loop', 'In 4K, the eyes now land within twelve to eighteen pixels.'),
+ 'light1':('light', 'Lighting was all over the place. Bright sun, dark rooms.'),
+ 'light2':('light', 'I measured the skin on every face, evened out brightness and color, then graded everything together.'),
+ 'music1':('music', 'The music came from a local model. A hundred and twenty beats per minute, with a big drop just after eight seconds.'),
+ 'music2':('music', 'I extracted every beat. Eighth notes before the drop, sixteenths after, and thirty-second notes at the peak.'),
+ 'edit1': ('edit', "I didn't drag clips by hand. Every cut lives in a table. Frame, face, size, color."),
+ 'edit2': ('edit', 'A script builds the DaVinci Resolve timeline from that table. Change one rule, and it rebuilds in minutes. This opening went through more than fifteen versions.'),
+ 'pip1':  ('pip', 'Picture in picture shows one feature at a time. One eye, or one mouth.'),
+ 'pip2':  ('split', 'Split faces join the left half from one day with the right half from another.'),
+ '3d1':   ('3d', 'For the naked-eye 3D shots, I cut myself out and laid the cutout over two black bars, so I step out of the frame.'),
+ '3d2':   ('3d', "The first cutouts had a white halo, and the light didn't match. A finer matting model fixed it."),
+ 'end1':  ('wall', 'The ending is the part I cared about most.'),
+ 'end2':  ('wall', 'One face splits on the beat into two hundred fifty-six bricks. Every brick is an aligned me.'),
+ 'end3':  ('break', 'Then the wall breaks, and falls to the floor.'),
+ 'end4':  ('break', 'And here, I hold. Nothing moves.'),
+ 'end5':  ('tunnel', 'Then the pieces fly back like particles, form a tunnel, and dive into the title.'),
+ 'end6':  ('tunnel', 'My first version went straight from wall to tunnel. It felt flat. That one pause is what makes it land.'),
+ 'fail1': ('fail', 'Plenty went wrong along the way.'),
+ 'fail2': ('fail', 'The early cuts had white flashes. Rewatching them actually hurt, so I swapped them for warm light.'),
+ 'fail3': ('fail', 'A thin vertical line ran through the whole video. It came from a film scratch overlay.'),
+ 'fail4': ('fail', "And one ending blew out to pure white. You couldn't see a single face."),
+ 'flow1': ('flow', 'Looking back, this is the whole pipeline.'),
+ 'flow2': ('flow', 'AI did a lot of the heavy lifting. Fast, and never tired. But which cut looks right, and where to pause, I had to see for myself, again and again.'),
+ 'full':  ('full', "Okay. Here's the full cut."),
+ 'cta1':  ('cta', 'One question. The pause before the tunnel. Keep it, or cut it? Tell me in the comments.'),
+ 'cta2':  ('cta', 'The code, the data and a full tutorial are open source. The link is in the post.'),
+}
+ORDER = list(LINES)
