@@ -6,7 +6,7 @@
 
 仓库里还有第二条流水线：用一个确定性的 canvas 渲染器，加本地语音和音乐模型，做一条 4 分钟的竖屏"幕后讲解"视频，讲清楚上面这条开场是怎么做出来的。
 
-**这里只有代码、教程、分析和提示词。** 不含任何人脸、视频、照片、配音、配乐或素材清单。你需要用自己的素材跑。
+**这里有代码、教程、分析、提示词，以及作者公开的派生数据**（关键点、剪辑表、素材清单、节拍、合成音色、生成的配乐和配音，见 [dataset/](dataset/)）。**不含**任何原始照片和视频，也不含由它们导出的图片或帧。你需要用自己的素材跑。
 
 [English summary](#english-summary)
 
@@ -62,6 +62,7 @@ cp config.example.env .env && $EDITOR .env  # 填好下面这些路径
 
 | 环境变量 | 含义 |
 |---|---|
+| `MONTAGE_LIBRARY` | 上游扫描用的视频库根目录 |
 | `MONTAGE_ROOT` | 开场流水线的工作目录，里面会生成 `work/`、`assets/`、`cache/`、`out/` |
 | `MONTAGE_SOURCES_CSV` | 素材清单 CSV，列：`cid,path,dur,date,verdict`，`verdict` 为 `是我` 的行会被扫描 |
 | `MONTAGE_PHOTOS` | 照片文件夹（JPG） |
@@ -105,7 +106,8 @@ cp config.example.env .env && $EDITOR .env  # 填好下面这些路径
 ## 目录
 
 ```text
-pipeline/              开场流水线（00 到 14 按顺序跑）
+pipeline/              开场流水线（upstream/u1 到 u5，然后 00 到 14 按顺序跑）
+  upstream/            从整个视频库找出本人素材：扫描、采样、身份比对、清单、热图
   resolve/             在 Resolve 里执行的脚本：build / fx / fx3d / final / sapphire
   three/               three.js 砖墙→隧道场景、逐帧捕获服务器、音频转节拍
   music/               ACE-Step 批量生成脚本和配乐提示词
@@ -114,13 +116,16 @@ explainer/             讲解视频流水线
   vo/                  旁白稿和 TTS
   tools/ai_flavor.py   中文文案 AI 味检查
 skills/ agents/        Claude Code skill 和 agent
+dataset/               作者公开的派生数据和生成音频（无图片、无原始素材）
 docs/                  教程、分析、提示词、合规
 ```
 
 ## 隐私
 
-- 仓库不含任何媒体文件和由素材生成的数据（关键点、剪辑表、素材清单都不在）。
-- 所有个人路径都换成了环境变量。
+- 不含原始照片、视频，也不含由它们导出的任何图片或帧。
+- 公开的派生数据（`dataset/`）里路径都改成了相对路径，视频库总索引里的地点、行程字段没有放。
+- 代码里的个人路径都换成了环境变量。
+- 用到的模型都是公开模型，许可见 [01 技术栈](docs/01_技术栈.md#模型和许可)。
 - `.gitignore` 默认挡住 `work/ assets/ cache/ out/ data/ frames/` 和常见媒体格式，防止误提交。
 - 身份过滤会丢掉同框有其他人脸的照片，避免别人出现在成片里。
 
@@ -144,4 +149,4 @@ The second pipeline renders a 4-minute vertical making-of video with a determini
 
 Key techniques: MediaPipe 478-point landmarks, a 6-point Umeyama similarity fit to one canonical face, pose/blink/jaw/residual gates, closed-loop re-measurement after warping, per-face exposure and white-balance gains, beat-grid subdivision (8ths → 16ths → 32nds), single-feature picture-in-picture, split-face collage, matte-over-bars "naked-eye 3D", and a deliberate silent pause before the tunnel.
 
-No media, faces, voice or source lists are included. Bring your own footage. See `docs/` (Chinese) for the full tutorial, the Resolve scripting pitfalls, the prompts and the analysis. Installable as a Claude Code plugin with two skills and two agents.
+No original photos or videos, and no images derived from them, are included. The author's derived data (landmarks, cut list, source lists, beat scores, synthetic voices, generated music and narration) is published in `dataset/`. Bring your own footage. See `docs/` (Chinese) for the full tutorial, the Resolve scripting pitfalls, the prompts and the analysis. Installable as a Claude Code plugin with two skills and two agents.

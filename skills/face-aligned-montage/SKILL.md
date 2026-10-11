@@ -22,6 +22,6 @@ The pipeline lives in this repository: `pipeline/` (two directories above this f
 
 ## Procedure
 1. Check env vars (`MONTAGE_ROOT`, `MONTAGE_SOURCES_CSV`, `MONTAGE_PHOTOS`, `MONTAGE_REF_FACE`, `MONTAGE_OUT`, `MONTAGE_FINAL`, `ACESTEP_DIR`) and models (`scripts/download_models.sh`).
-2. Run `pipeline/00` → `14` in order as in docs/02 (shard 01-03 four ways).
+2. If there is no source list yet, run `pipeline/upstream/u1` → `u5` (library scan, face samples, identity, sources.csv, heatmap) and let the user review `work/inventory.html`. Then run `pipeline/00` → `14` in order as in docs/02 (shard 01-03 four ways). `dataset/montage/work/` holds the author's reference outputs for every step.
 3. In Resolve (MCP `run_script_unsafe` or the console with `resolve`/`project` defined): `resolve/build.py`, then `fx.py` and `fx3d.py` in CHUNKs, then `final.py`. Optional `sapphire.py`.
 4. Verify, compare with the previous version, write what changed.

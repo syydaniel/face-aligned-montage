@@ -28,3 +28,8 @@ node_modules/
 __pycache__/
 .DS_Store
 explainer/web/timeline.json
+
+# published derived data (no images, no original photos/videos)
+!dataset/montage/work/
+!dataset/explainer/data/
+!dataset/**/*.flac
